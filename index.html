@@ -36,7 +36,11 @@
   .status.repeat{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
   .status.repeat .big{font-size:46px}
   .status.unknown,.status.bad{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
-  .status.ok .sub,.status.repeat .sub,.status.unknown .sub,.status.bad .sub{color:inherit;opacity:.85}
+  .status.again{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+  .status.again .big{font-size:28px}
+  .status.ok .sub,.status.again .sub,.status.repeat .sub,.status.unknown .sub,.status.bad .sub{color:inherit;opacity:.85}
+  .status .raw{font-family:Consolas,monospace;font-size:12px;word-break:break-all}
+  .hist div{word-break:break-all}
   button{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--line);background:var(--white);cursor:pointer;color:var(--ink)}
   button.primary{background:var(--ink);color:var(--white);border-color:var(--ink)}
   button.small{padding:5px 10px;font-size:13px}
@@ -233,6 +237,8 @@ const I18N = {
     f_all:'Все', f_free:'Свободные', f_used:'Использованные', q_ph:'поиск: серийник, товар, размер, отгрузка',
     stats:(t,f,u)=>`Кодов в базе <b>${t}</b> · свободных <b>${f}</b> · использованных <b>${u}</b>`,
     st_ok:'Принято', st_repeat:'ПОВТОР — код уже использован', st_unknown:'Кода нет в базе — этот PDF не загружали', st_bad:'Не похоже на код маркировки',
+    st_again:'Уже принят только что', st_ean:'Это штрих-код товара, а не код маркировки', ean_hint:'Наведи сканер на квадратный код',
+    chars:'симв.', keys_l:'клавиши', layout_note:'раскладка RU → EN',
     used_at:'Использован', page:'стр.', got:'Получено',
     parsing:n=>`Разбираю ${n}…`, up_done:(n,p,a)=>`${n}: страниц ${p}, добавлено кодов ${a}.`, up_dup:l=>` Уже были в базе (пропущены): стр. ${l}.`, up_unread:l=>` Не удалось прочитать код: стр. ${l}.`, up_none:'Новых кодов нет — файл не сохранён.',
     show:'показать', pdf_free:'PDF свободных', print:'печать', del:'удалить', nothing:'Пока ничего не загружено', none:'Ничего не найдено',
@@ -254,6 +260,8 @@ const I18N = {
     f_all:'全部', f_free:'未使用', f_used:'已使用', q_ph:'搜索：序列号、商品、尺码、单据',
     stats:(t,f,u)=>`数据库编码 <b>${t}</b> · 未使用 <b>${f}</b> · 已使用 <b>${u}</b>`,
     st_ok:'已接受', st_repeat:'重复 — 此编码已使用', st_unknown:'数据库中无此编码 — 未上传对应 PDF', st_bad:'不是有效的标识码',
+    st_again:'刚刚已接受', st_ean:'这是商品条码，不是标识码', ean_hint:'请对准方形码',
+    chars:'字符', keys_l:'按键', layout_note:'键盘布局 RU → EN',
     used_at:'已使用于', page:'第', got:'收到',
     parsing:n=>`正在解析 ${n}…`, up_done:(n,p,a)=>`${n}：共 ${p} 页，新增编码 ${a} 个。`, up_dup:l=>` 已存在（跳过）：第 ${l} 页。`, up_unread:l=>` 无法读取编码：第 ${l} 页。`, up_none:'没有新编码 — 文件未保存。',
     show:'查看', pdf_free:'未使用 PDF', print:'打印', del:'删除', nothing:'尚未上传任何文件', none:'未找到',
@@ -301,20 +309,42 @@ async function findCode(gtin,serial){ return req(tx('codes').objectStore('codes'
 
 // ============================================================ разбор кодов
 const GS='\x1d';
+// Русская раскладка на планшете: сканер шлёт коды клавиш, и буквы приходят кириллицей.
+// Строка целиком набрана в одной раскладке, поэтому перевод по положению клавиш однозначен.
+const RU_KEYS='ёйцукенгшщзхъфывапролджэячсмитьбю.ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,"№;:?/';
+const EN_KEYS='`qwertyuiop[]asdfghjkl;\'zxcvbnm,./~QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?@#$^&|';
+function fixLayout(s){
+  if(!/[А-Яа-яЁё№]/.test(s)) return s;
+  let o=''; for(const c of s){ const i=RU_KEYS.indexOf(c); o+=i<0?c:EN_KEYS[i]; } return o;
+}
+// Серийник ищется по нескольким кандидатам: GS у сканера может потеряться или прийти мусором
+// (`]` от Ctrl+], цифры от Alt+0029). Какой кандидат верный, решает база (findAny).
 function parseKM(raw){
-  let s=(raw||'').trim();
+  const src=(raw||'').trim();
+  let s=fixLayout(src);
+  const ru=s!==src;
   s=s.replace(/^\](d2|Q3|C1|e0)/,'');
   s=s.replace(/^\x1d+/,'');
   s=s.replace('(01)','01').replace('(21)','21').replace('(91)',GS+'91').replace('(92)',GS+'92');
   s=s.replace(/[\r\n]/g,'');
-  const m=s.match(/^01(\d{14})21(.*)$/);
+  const m=s.match(/^01(\d{14})21(.+)$/);
   if(!m) return null;
-  const gtin=m[1], rest=m[2];
-  let serial;
-  if(rest.includes(GS)) serial=rest.split(GS)[0];
-  else { const mm=rest.match(/^(.+?)91.{4}92/); serial=mm?mm[1]:rest; }
-  return {gtin, serial, full:s.replace(/\x1d/g,'')};
+  const gtin=m[1], rest=m[2], candidates=[];
+  const add=v=>{ if(v&&v.length<=20&&!v.includes(GS)&&!candidates.includes(v)) candidates.push(v); };
+  if(rest.includes(GS)) add(rest.split(GS)[0]);
+  add(rest.slice(0,13));                                         // легпром: серийник ровно 13 символов
+  const mm=rest.match(/^(.+?)9[13].{4}(?:\x1d?92|$)/); if(mm) add(mm[1]);
+  add(rest);                                                     // короткий код без криптохвоста
+  if(!candidates.length) return null;
+  return {gtin, serial:candidates[0], candidates, ru, full:s.replace(/\x1d/g,'')};
 }
+async function findAny(p){
+  for(const serial of p.candidates){ const row=await findCode(p.gtin,serial); if(row) return row; }
+  return null;
+}
+// Строка скана для диагностики: невидимые символы метками ⟨GS⟩, ⟨TAB⟩, ⟨0x1E⟩, в конце длина.
+const CTRL_NAMES={'\x1d':'GS','\t':'TAB','\r':'CR','\n':'LF'};
+const showRaw=s=>[...s.slice(0,160)].map(c=>c>=' '&&c!=='\x7f'?c:`⟨${CTRL_NAMES[c]||'0x'+c.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0')}⟩`).join('')+(s.length>160?'…':'')+` (${s.length} ${T('chars')})`;
 
 // ============================================================ PDF → коды
 pdfjsLib.GlobalWorkerOptions.workerSrc=URL.createObjectURL(new Blob([document.getElementById('pdfworker').textContent],{type:'text/javascript'}));
@@ -401,41 +431,55 @@ let actx;
 function beep(kind){
   try{
     actx=actx||new (window.AudioContext||window.webkitAudioContext)();
-    const seq = kind==='ok'?[[880,.12]]:kind==='repeat'?[[220,.25],[220,.25],[220,.25]]:[[440,.3]];
+    const seq = kind==='ok'?[[880,.12]]:kind==='again'?[[660,.06]]:kind==='repeat'?[[220,.25],[220,.25],[220,.25]]:[[440,.3]];
     let t=actx.currentTime;
     for(const [f,d] of seq){const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=f;o.type='square';g.gain.value=.15;o.connect(g).connect(actx.destination);o.start(t);o.stop(t+d);t+=d+.08;}
   }catch(e){}
 }
 const fmt=s=>{ if(!s) return ''; const d=new Date(s); return d.toLocaleDateString(LANG==='zh'?'zh-CN':'ru')+' '+d.toLocaleTimeString(LANG==='zh'?'zh-CN':'ru',{hour:'2-digit',minute:'2-digit'}); };
 
-async function handleScan(raw){
+// Двойное чтение: тот же код сразу после «Принято» — это не повтор, а второй скан той же этикетки.
+const AGAIN_MS=10000;
+let lastOk=null;
+async function handleScan(raw,keys=[]){
   const docName=$('#doc').value.trim();
   const p=parseKM(raw);
   let d;
-  if(!p) d={status:'bad', message:T('st_bad'), raw};
+  if(!p) d=/^(\d{8}|\d{12,14})$/.test(raw.trim())?{status:'bad', message:T('st_ean'), hint:T('ean_hint')}:{status:'bad', message:T('st_bad')};
   else {
-    const row=await findCode(p.gtin,p.serial);
+    const row=await findAny(p);
     if(!row) d={status:'unknown', message:T('st_unknown'), ...p};
     else {
       const files=await allFiles(); const fn=(files.find(f=>f.id===row.file_id)||{}).name||'';
-      if(row.used_at) d={status:'repeat', message:T('st_repeat'), ...row, file:fn};
+      if(row.used_at && lastOk && lastOk.id===row.id && Date.now()-lastOk.at<AGAIN_MS){
+        lastOk.at=Date.now(); d={status:'again', message:T('st_again'), ...row, file:fn};
+      }
+      else if(row.used_at) d={status:'repeat', message:T('st_repeat'), ...row, file:fn};
       else {
         row.used_at=new Date().toISOString(); row.used_doc=docName;
         const t=tx('codes','readwrite'); t.objectStore('codes').put(row); await txDone(t);
+        lastOk={id:row.id, at:Date.now()};
         d={status:'ok', message:T('st_ok'), ...row, file:fn};
       }
     }
   }
   const st=$('#status'); st.className='status '+d.status;
   let sub='';
-  if(d.status==='ok') sub=`${d.product||''} ${d.size||''} · ${d.file} · ${T('page')} ${d.page}`;
+  if(d.status==='ok'||d.status==='again') sub=`${d.product||''} ${d.size||''} · ${d.file} · ${T('page')} ${d.page}`;
   if(d.status==='repeat') sub=`${T('used_at')} ${fmt(d.used_at)}${d.used_doc?' · '+d.used_doc:''} · ${d.product||''} ${d.size||''} · ${d.file} · ${T('page')} ${d.page}`;
   if(d.status==='unknown') sub=`GTIN ${d.gtin} · ${d.serial}`;
-  if(d.status==='bad') sub=`${T('got')}: ${(d.raw||'').slice(0,60)}`;
-  st.innerHTML=`<div class="big">${esc(d.message)}</div><div class="sub">${esc(sub)}</div>`;
-  beep(d.status==='ok'?'ok':d.status==='repeat'?'repeat':'warn');
-  const cls=d.status==='ok'?'o':d.status==='repeat'?'r':'u';
-  $('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')} · ${esc(d.serial||'')} · ${esc(d.message)}</div>`);
+  if(d.hint) sub=d.hint;
+  // что именно прислал сканер — для статусов, когда код не принят
+  let diag='';
+  if(d.status==='bad'||d.status==='unknown'){
+    diag=`${T('got')}: ${showRaw(raw)}`;
+    if(p&&p.ru) diag+=` · ${T('layout_note')}`;
+    if(keys.length) diag+=` · ${T('keys_l')}: ${keys.join(', ')}`;
+  }
+  st.innerHTML=`<div class="big">${esc(d.message)}</div><div class="sub">${esc(sub)}</div>`+(diag?`<div class="sub raw">${esc(diag)}</div>`:'');
+  beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
+  const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
+  $('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')}${d.serial?' · '+esc(d.serial):''} · ${esc(d.message)}${diag?' · '+esc(diag):''}</div>`);
   refreshAll();
 }
 // ============================================================ приём со сканера
@@ -444,19 +488,25 @@ async function handleScan(raw){
 // сканеров превращается в Enter, Enter иногда приходит как keyCode 229.
 // Поэтому: 1) всё, что пришло, копится в буфере, пока код не станет полным или не
 // найдётся в базе; 2) хвосты 91…/92… после уже принятого кода пропускаются;
-// 3) Enter ловится несколькими способами; 4) курсор подхватывается сам.
+// 3) Enter ловится несколькими способами; 4) курсор подхватывается сам;
+// 5) разделитель GS сканеры шлют по-разному: F8, Ctrl+] или Alt+0029 на цифровом блоке — всё это
+// превращается в настоящий GS (опыт atv-picker, public/scan-keys.js).
 const scanEl=$('#scan');
 let buf='', holdTimer=null, pauseTimer=null, lastParsedAt=0, chain=Promise.resolve();
-const looksComplete=s=>/91.{4}\x1d?92.{44}/.test(s) || /93.{4}$/.test(s);   // полный КМ (лёгпром) или короткий с 93
-const isTail=s=>/^\x1d?(91|92|93)/.test(s.replace(/^\](d2|Q3|C1|e0)/,''));
+let altDigits='', scanKeys=[];
+const looksComplete=s=>/9[13].{4}[\s\S]{0,5}92.{44}/.test(s) || /93.{4}$/.test(s);   // полный КМ (лёгпром) или короткий с 93
+const isTail=s=>/^[\x1d\]]?(91|92|93)/.test(s.replace(/^\](d2|Q3|C1|e0)/,''));
 const histLine=(cls,txt)=>$('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')} · ${txt}</div>`);
+const noteKey=k=>{ if(scanKeys.length<20) scanKeys.push(k); };
 function takeField(){ const v=scanEl.value; scanEl.value=''; return v.replace(/[\r\n\t]/g,''); }
+function armPause(){ clearTimeout(pauseTimer); pauseTimer=setTimeout(()=>onChunk(takeField()),500); }
+function putChar(c,key){ scanEl.value+=c; noteKey(key); armPause(); }
 async function flush(){
   clearTimeout(holdTimer); holdTimer=null;
-  const s=buf; buf='';
+  const s=buf, keys=scanKeys; buf=''; scanKeys=[];
   if(!s.trim()) return;
   if(parseKM(s)) lastParsedAt=Date.now();
-  await handleScan(s);
+  await handleScan(s,keys);
 }
 function scheduleHold(){ clearTimeout(holdTimer); holdTimer=setTimeout(()=>{ holdTimer=null; chain=chain.then(flush).catch(()=>{}); },1500); }
 async function handleChunk(v){
@@ -465,24 +515,45 @@ async function handleChunk(v){
   buf+=v;
   const p=parseKM(buf);
   if(p){
-    if(looksComplete(buf) || await findCode(p.gtin,p.serial)) return flush();
+    if(looksComplete(buf) || await findAny(p)) return flush();
     return scheduleHold();                       // начало верное, но код пришёл не весь — ждём остаток
   }
   if(isTail(buf) && Date.now()-lastParsedAt<4000){ // хвост кода, который уже обработан
-    histLine('t',`${T('tail_skip')} · ${esc(buf.slice(0,24))}…`); buf=''; return;
+    histLine('t',`${T('tail_skip')} · ${esc(buf.slice(0,24))}…`); buf=''; scanKeys=[]; return;
   }
   return flush();
 }
 function onChunk(v){ chain=chain.then(()=>handleChunk(v)).catch(()=>{}); }
 function terminator(e){ if(e) e.preventDefault(); clearTimeout(pauseTimer); onChunk(takeField()); }
-scanEl.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key==='Tab'||e.keyCode===13||e.keyCode===9) terminator(e); });
+scanEl.addEventListener('keydown',e=>{
+  if(e.key==='F8'){ e.preventDefault(); putChar(GS,'F8'); return; }
+  if(e.ctrlKey&&(e.code==='BracketRight'||e.key===']')){ e.preventDefault(); putChar(GS,'Ctrl+]'); return; }
+  if(e.altKey&&/^Numpad\d$/.test(e.code)){ e.preventDefault(); altDigits+=e.code.slice(6); return; }   // символ — на отпускании Alt
+  if(e.key==='Enter'||e.key==='Tab'||e.keyCode===13||e.keyCode===9) return terminator(e);
+  if((e.ctrlKey||e.altKey||e.metaKey)&&!['Control','Alt','Meta','Shift'].includes(e.key)) noteKey(`${e.ctrlKey?'Ctrl':e.altKey?'Alt':'Meta'}+${e.key}`);
+  else if(e.key&&e.key.length>1&&!['Shift','Control','Alt','Meta','CapsLock','NumLock','Backspace','Unidentified','Process'].includes(e.key)) noteKey(e.key);
+});
+// Alt+0029: символ появляется, когда Alt отпустили; цифры в код не пишем
+document.addEventListener('keyup',e=>{
+  if(e.key!=='Alt'||altDigits==='') return;
+  e.preventDefault();                                   // иначе Chrome уводит фокус в своё меню
+  const n=Number(altDigits), key=`Alt+${altDigits}`; altDigits='';
+  if(n>0&&n<256) putChar(String.fromCharCode(n),key); else noteKey(key);
+},true);
 scanEl.addEventListener('keyup',e=>{ if(e.key==='Enter'||e.keyCode===13) terminator(e); });          // Android IME: keydown=229, но keyup=13
 scanEl.addEventListener('beforeinput',e=>{ if(e.inputType==='insertLineBreak'||e.inputType==='insertParagraph') terminator(e); });
 $('#scanform').addEventListener('submit',e=>terminator(e));
 // сканер без Enter/Tab, либо пауза внутри кода — забираем по тишине, буфер склеит куски
-scanEl.addEventListener('input',()=>{ clearTimeout(pauseTimer); pauseTimer=setTimeout(()=>onChunk(takeField()),500); });
+scanEl.addEventListener('input',armPause);
 // курсор: Enter в поле «Отгрузка» переводит в поле скана; любая клавиша вне полей ввода — тоже
 $('#doc').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); scanEl.focus(); } });
+// скан, начатый в поле «Отгрузка»: код забираем в поле скана, название отгрузки возвращаем как было
+$('#doc').addEventListener('input',()=>{
+  const el=$('#doc'), i=el.value.search(/01\d{14}21/);
+  if(i<0) return;
+  const code=el.value.slice(i); el.value=el.value.slice(0,i);
+  scanEl.focus(); scanEl.value+=code; armPause();
+});
 document.addEventListener('keydown',e=>{
   const t=e.target;
   if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)) return;
