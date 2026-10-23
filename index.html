@@ -17,6 +17,8 @@
   header .stats{color:var(--muted);font-size:14px;flex:1}
   header .stats b{color:var(--ink)}
   .lang button{padding:4px 9px;font-size:13px}
+  a.help-link{padding:4px 11px;font-size:13px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;background:var(--white)}
+  a.help-link::before{content:"?";display:inline-block;width:16px;height:16px;margin-right:6px;border-radius:50%;background:var(--ink);color:#fff;font-size:11px;font-weight:700;line-height:16px;text-align:center;vertical-align:1px}
   .lang button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
   nav.tabs-main{display:flex;background:var(--white);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
   nav.tabs-main button{flex:1;padding:12px 6px;border:0;border-bottom:3px solid transparent;background:none;font:inherit;font-size:15px;color:var(--muted);border-radius:0}
@@ -39,6 +41,7 @@
   .status.again{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
   .status.again .big{font-size:28px}
   .status.ok .sub,.status.again .sub,.status.repeat .sub,.status.unknown .sub,.status.bad .sub{color:inherit;opacity:.85}
+  .status a.help-what{color:inherit;font-weight:600;align-self:flex-start}
   .status .raw{font-family:Consolas,monospace;font-size:12px;word-break:break-all}
   .hist div{word-break:break-all}
   button{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--line);background:var(--white);cursor:pointer;color:var(--ink)}
@@ -83,6 +86,7 @@
 <header>
   <h1>КМ-сканер</h1><span class="ver">v2</span>
   <div class="stats" id="stats"></div>
+  <a class="help-link" href="scanner-help.html" data-i="help_link">Помощь</a>
   <div class="lang row"><button class="on" data-lang="ru">RU</button><button data-lang="zh">中文</button></div>
 </header>
 <nav class="tabs-main">
@@ -225,7 +229,7 @@
 // ============================================================ локализация
 const I18N = {
   ru: {
-    tab_scan:'Сканирование', tab_files:'Файлы', tab_codes:'Коды',
+    tab_scan:'Сканирование', tab_files:'Файлы', tab_codes:'Коды', help_link:'Помощь', help_what:'Что делать? →',
     doc_label:'Отгрузка / документ (необязательно)', doc_ph:'например: WB Казань 10.09',
     scan_label:'Наведи сканер на код и нажми курок', scan_ph:'здесь появится код…',
     scan_hint:'Сканируй — курсор встанет в поле сам. Сканер сам нажмёт Enter.', tail_skip:'хвост кода — пропущен',
@@ -248,7 +252,7 @@ const I18N = {
     free_name:'свободные_коды', pcs:'шт', shown:n=>`Показано ${n}`, fab_text:'Добавить PDF', not_pdf:'это не PDF-файл',
   },
   zh: {
-    tab_scan:'扫描', tab_files:'文件', tab_codes:'编码',
+    tab_scan:'扫描', tab_files:'文件', tab_codes:'编码', help_link:'帮助', help_what:'怎么办？→',
     doc_label:'发货单 / 单据（可不填）', doc_ph:'例如：WB 喀山 10.09',
     scan_label:'将扫描枪对准条码并按扳机', scan_ph:'编码将显示在这里…',
     scan_hint:'直接扫描即可，光标会自动定位。扫描枪会自动按回车。', tail_skip:'编码尾部 — 已忽略',
@@ -476,7 +480,8 @@ async function handleScan(raw,keys=[]){
     if(p&&p.ru) diag+=` · ${T('layout_note')}`;
     if(keys.length) diag+=` · ${T('keys_l')}: ${keys.join(', ')}`;
   }
-  st.innerHTML=`<div class="big">${esc(d.message)}</div><div class="sub">${esc(sub)}</div>`+(diag?`<div class="sub raw">${esc(diag)}</div>`:'');
+  st.innerHTML=`<div class="big">${esc(d.message)}</div><div class="sub">${esc(sub)}</div>`+(diag?`<div class="sub raw">${esc(diag)}</div>`:'')
+    +(['bad','unknown','repeat'].includes(d.status)?`<a class="sub help-what" href="scanner-help.html">${esc(T('help_what'))}</a>`:'');
   beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
   const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
   $('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')}${d.serial?' · '+esc(d.serial):''} · ${esc(d.message)}${diag?' · '+esc(diag):''}</div>`);
