@@ -294,6 +294,8 @@ const I18N = {
     sup_change:'Сменить', sup_close:'Закрыть приёмку',
     sup_active:(n,org,agent,c)=>`Приёмка <b>${n}</b> · ${org} · ${agent} · сканером принято <b>${c}</b>`,
     sup_grp:'Карточки:', grp_new:'Одежда NEW', grp_lamoda:'Ламода', new_grp:'Карточки товара',
+    setup_q:u=>`Подключить сканер к «МойСклад» через сервер ${u}?\n\nНажмите «Отмена», если не знаете, откуда эта ссылка.`,
+    setup_bad:'Ссылка настройки «МойСклад» неполная или испорчена — попросите у Романа новую.',
     ms_notfound_g:(g,f,o)=>`МойСклад: в группе «${f}» нет товара со штрихкодом ${g} — в приёмку не добавлен.`+(o?` Такая карточка есть в «${o}» — проверьте переключатель «Карточки».`:' Скажите Артёму.'),
     sup_close_q:n=>`Закрыть приёмку ${n}? Сканы перестанут в неё попадать. Сам документ в «МойСклад» не меняется.`,
     sup_close_pending:(n,k)=>`В приёмку ${n} ещё не отправлено ${k} шт. Они отправятся и после закрытия. Закрыть?`,
@@ -342,6 +344,8 @@ const I18N = {
     sup_change:'更换', sup_close:'关闭入库单',
     sup_active:(n,org,agent,c)=>`入库单 <b>${n}</b> · ${org} · ${agent} · 已扫描 <b>${c}</b>`,
     sup_grp:'商品卡：', grp_new:'Одежда NEW', grp_lamoda:'Lamoda', new_grp:'商品卡',
+    setup_q:u=>`通过服务器 ${u} 把扫描器连接到 МойСклад？\n\n如果不知道这个链接从哪里来，请点“取消”。`,
+    setup_bad:'МойСклад 设置链接不完整或已损坏 — 请向 Roman 要新的链接。',
     ms_notfound_g:(g,f,o)=>`МойСклад：“${f}”组中没有条码为 ${g} 的商品 — 未加入入库单。`+(o?`该商品卡在“${o}”中 — 请检查“商品卡”切换。`:'请告诉 Артём。'),
     sup_close_q:n=>`关闭入库单 ${n}？之后的扫描不会再进入该单。МойСклад 中的单据本身不变。`,
     sup_close_pending:(n,k)=>`入库单 ${n} 还有 ${k} 个未发送，关闭后仍会继续发送。确定关闭？`,
@@ -981,6 +985,18 @@ function msCell(c){
 }
 
 // ---- настройка связи (вкладка «Файлы»)
+// Одной ссылкой: …/km-scanner/#ms=<адрес сервера>&t=<токен>. Сохраняем в планшет и сразу стираем из адресной строки.
+// Сервер называем человеку и спрашиваем: чужая ссылка не должна молча увести коды на посторонний сервер.
+let msSetup=null;
+(function(){
+  const h=new URLSearchParams(location.hash.slice(1)), u=(h.get('ms')||'').trim().replace(/\/+$/,''), t=(h.get('t')||'').trim();
+  if(!u&&!t) return;
+  history.replaceState(null,'',location.pathname+location.search);
+  const okUrl=/^https:\/\/[^\s/?#]+$/i.test(u)||/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(u);
+  if(!okUrl||!/^[A-Za-z0-9_-]{20,200}$/.test(t)){ msSetup='bad'; return; }
+  if(!confirm(T('setup_q')(u))) return;
+  LS.set('km_ms_url',u); LS.set('km_ms_token',t); msSetup='ok';
+})();
 $('#msUrl').value=msCfg().url; $('#msToken').value=msCfg().token;
 $('#msSave').onclick=async()=>{
   let url=$('#msUrl').value.trim().replace(/\/+$/,''); const m=$('#msMsg');
@@ -1007,7 +1023,12 @@ for(const inp of [fileInp,$('#file2')]) inp.addEventListener('change',()=>{const
 function showView(v){ document.querySelectorAll('.view').forEach(x=>x.classList.toggle('on',x.id==='view-'+v)); document.querySelectorAll('nav.tabs-main button').forEach(b=>b.classList.toggle('on',b.dataset.view===v)); if(v==='scan') setTimeout(()=>$('#scan').focus(),50); }
 document.querySelectorAll('nav.tabs-main button').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
-openDB().then(async()=>{ applyLang(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll(); msPump(); }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; });
+openDB().then(async()=>{
+  applyLang(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll();
+  if(msSetup==='bad') msLine('err',esc(T('setup_bad')));
+  if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
+  msPump();
+}).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; });
 </script>
 </body>
 </html>
