@@ -1,3 +1,4 @@
 .claude/
 *.json.bak
 kmscan_backup_*.json
+.playwright-mcp/
