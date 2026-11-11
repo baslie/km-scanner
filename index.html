@@ -522,6 +522,7 @@ async function uploadFiles(list){
     if(dup.length) m+=T('up_dup')(dup.join(', '));
     if(unread.length) m+=T('up_unread')(unread.join(', '));
     msg.className='msg'+((dup.length||unread.length)?' err':''); msg.textContent=m;
+    kmLog('info',unread.length?'warn':'info',`PDF ${f.name}: страниц ${doc.numPages}, новых кодов ${added}${dup.length?`, уже были: стр. ${dup.join(', ')}`:''}${unread.length?`, не прочитан код: стр. ${unread.join(', ')}`:''}`);
     prog.hidden=true;
   }
   $('#fab').classList.remove('busy');
@@ -590,6 +591,7 @@ async function handleScan(raw,keys=[]){
   beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
   const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
   addHist(cls,`${d.serial?esc(d.serial)+' · ':''}${esc(d.message)}${diag?' · '+esc(diag):''}`);
+  logScan(d,raw,keys,isEan,recovered,row);
   // строка «МойСклад» под статусом — про прошлый код; у непринятого кода её не оставляем (кроме вопроса о карточке)
   if(d.status!=='ok'&&d.status!=='again'&&!$('#msline button')) msLine('','');
   await refreshAll();
@@ -732,6 +734,7 @@ async function toggle(id){
   }
   const t=tx('codes','readwrite'), s=t.objectStore('codes'); const r=await req(s.get(id)); if(!r) return;
   if(r.used_at){ r.used_at=null; r.used_doc=null; Object.assign(r,MS_CLEAR); } else { r.used_at=new Date().toISOString(); r.used_doc=T('manual'); }
+  kmLog('info','info',`${r.used_at?'Отмечен вручную':'Вернули код'} · ${r.serial}`);
   s.put(r); await txDone(t); refreshAll(); }
 async function delFile(id){ const f=(await allFiles()).find(x=>x.id===id); if(!f||!confirm(T('confirm_del')(f.name))) return;
   const t=tx(['files','codes'],'readwrite'); t.objectStore('files').delete(id);
@@ -813,7 +816,7 @@ async function api(method,path,body){
   try{
     const r=await fetch(`${c.url}/api/receiving/${path}`,{method,
       headers:{Authorization:'Bearer '+c.token,...(body?{'Content-Type':'application/json'}:{})},
-      body:body?JSON.stringify(body):undefined, signal:AbortSignal.timeout?AbortSignal.timeout(20000):undefined});
+      body:body?JSON.stringify({device:devName(),...body}):undefined, signal:AbortSignal.timeout?AbortSignal.timeout(20000):undefined});
     let data={}; try{ data=await r.json(); }catch(e){}
     return {ok:r.ok, status:r.status, data, error:data.error||`HTTP ${r.status}`};
   }catch(e){ return {ok:false, status:0, data:{}, error:e&&e.name==='TimeoutError'?T('net_timeout'):T('net_none')}; }
@@ -824,9 +827,71 @@ const shortOrg=s=>String(s||'').replace(/^ИП\s+(\S+)\s+(\S)\S*\s+(\S)\S*$/,'И
 const fmtDay=m=>{ const x=/^(\d{4})-(\d\d)-(\d\d)/.exec(m||''); return x?`${x[3]}.${x[2]}.${x[1]}`:''; };
 const newId=()=>(crypto.randomUUID?crypto.randomUUID():[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join(''));
 
+// ============================================================ журнал на сервере
+// Роман видит, что происходит на планшете, на странице «КМ-сканер» в ATV Picker (/km-log.html): каждый скан,
+// обрывы связи, сбои страницы, загрузки PDF. События копятся в очереди km_logq (переживает перезагрузку вкладки)
+// и уходят пачками на /api/receiving/log. Скан от этого не зависит: нет связи или токена — очередь ждёт.
+const LOGQ_KEY='km_logq', LOGQ_MAX=2000;
+const devId=(()=>{ let id=LS.get('km_device'); if(!id){ id=newId().replace(/-/g,'').slice(0,8); LS.set('km_device',id); } return id; })();
+let devModel=(/Android[^;]*;\s*([^;)]+)/.exec(navigator.userAgent)||[])[1]||(/Windows/.test(navigator.userAgent)?'Windows':/Mac OS/.test(navigator.userAgent)?'Mac':'браузер');
+if(devModel==='K') devModel='Android';   // Chrome прячет модель в User-Agent — спросим отдельно
+try{ if(navigator.userAgentData&&navigator.userAgentData.getHighEntropyValues) navigator.userAgentData.getHighEntropyValues(['model']).then(v=>{ if(v&&v.model) devModel=v.model; }).catch(()=>{}); }catch(e){}
+const devName=()=>`${devModel} · ${devId.slice(0,4)}`;
+const logLoad=()=>{ try{ return JSON.parse(LS.get(LOGQ_KEY)||'[]')||[]; }catch(e){ return []; } };
+let logSeq=+(LS.get('km_logseq')||0)||0, logTimer=null, logSending=false;
+function kmLog(kind,level,text,raw){
+  try{
+    logSeq++; LS.set('km_logseq',String(logSeq));
+    const q=logLoad();
+    q.push({id:`${devId}-${logSeq}`,at:new Date().toISOString(),kind,level,text:String(text).slice(0,400),...(raw?{raw:String(raw).slice(0,400)}:{})});
+    LS.set(LOGQ_KEY,JSON.stringify(q.slice(-LOGQ_MAX)));
+    logSchedule(1500);
+  }catch(e){}
+}
+function logSchedule(ms){ if(!logTimer) logTimer=setTimeout(()=>{ logTimer=null; logPump(); },ms); }
+async function logPump(){
+  if(logSending||!msOn()) return;
+  logSending=true;
+  try{
+    for(;;){
+      const batch=logLoad().slice(0,50); if(!batch.length) break;
+      const r=await api('POST','log',{events:batch});
+      if(!r.ok){ logSchedule(15000); break; }
+      const sent=new Set(batch.map(e=>e.id));
+      LS.set(LOGQ_KEY,JSON.stringify(logLoad().filter(e=>!sent.has(e.id))));
+    }
+  }finally{ logSending=false; }
+}
+// сбои самой страницы — тоже в журнал (не больше 30 за открытие, чтобы зациклившаяся ошибка не забила очередь)
+let jsErrors=0;
+function logJsError(text){ if(++jsErrors<=30) kmLog('error','error',`Сбой страницы: ${text}`); }
+window.addEventListener('error',e=>logJsError(`${e.message||'ошибка'}${e.lineno?` (строка ${e.lineno})`:''}`));
+window.addEventListener('unhandledrejection',e=>logJsError(String(e.reason&&e.reason.message||e.reason||'ошибка')));
+window.addEventListener('online',()=>{ kmLog('info','info','Сеть появилась'); logPump(); });
+window.addEventListener('offline',()=>kmLog('info','warn','Сеть пропала'));
+// скан → строка журнала, всегда по-русски (интерфейс может быть на 中文)
+const SCAN_LOG={ok:['ok','Принято'],again:['info','Уже принят только что (второе чтение)'],repeat:['warn','ПОВТОР'],unknown:['error','Нет в базе планшета'],bad:['error','Не код маркировки']};
+function logScan(d,raw,keys,isEan,recovered,row){
+  const [level,word]=SCAN_LOG[d.status]||['info',d.status];
+  const parts=[isEan&&d.status==='bad'?'Штрих-код товара, а не код маркировки':word];
+  if(d.serial) parts.push(d.serial);
+  if(d.product||d.size) parts.push(`${d.product||''} ${d.size||''}`.trim());
+  if(d.file) parts.push(`${d.file}, стр. ${d.page}`);
+  if(d.status==='repeat') parts.push(`принят ${fmt(d.used_at)}${d.used_doc?` · ${d.used_doc}`:''}`);
+  if(d.status==='ok'&&row&&row.ms==='pending') parts.push(`в приёмку ${row.ms_supply_name}${row.ms_group==='lamoda'?' (Ламода)':''}`);
+  if(recovered) parts.push('код собран из куска');
+  const showIt=recovered||d.status==='bad'||d.status==='unknown';
+  kmLog('scan',level,parts.join(' · '),showIt?`${showRaw(raw)}${keys&&keys.length?` · клавиши: ${keys.join(', ')}`:''}`:null);
+}
+// «не отправлено» пишем один раз на смену причины, а не на каждый повтор раз в 15 с
+let msWaitNote='';
+function logMsWait(text){ if(text!==msWaitNote){ msWaitNote=text; kmLog('ms','warn',`Не отправлено в «МойСклад»: ${text} — повтор сам`); } }
+function logMsBack(){ if(msWaitNote){ msWaitNote=''; kmLog('ms','info','Связь с «МойСклад» восстановлена, очередь уходит'); } }
+
 function setSupply(s){
   const was=supply?`${T('sup_word')} ${supply.name}`:null;
   supply=s; LS.set('km_supply',s?JSON.stringify(s):null);
+  kmLog('info','info',s?`Приёмка ${s.name}${s.org?` · ${s.org}`:''} · ${s.group==='lamoda'?'Ламода':'Одежда NEW'}`:'Приёмка закрыта на планшете');
   // поле «Отгрузка / документ»: номер приёмки, если человек не вписал своё
   const doc=$('#doc'), now=s?`${T('sup_word')} ${s.name}`:'';
   if(doc.value.trim()===''||doc.value===was) doc.value=now;
@@ -961,8 +1026,10 @@ async function msPump(){
       const r=await api('POST','scan',{supplyId:row.ms_supply,gtin:row.gtin,serial:row.serial,group:row.ms_group||'new',...(row.ms_choose?{choose:row.ms_choose}:{})});
       msSendingId=null;
       if(!r.ok&&msRetryable(r.status)){
-        msLine('err',esc(r.status===409?T('ms_wait_off'):r.status===401?T('ms_wait_auth'):T('ms_wait')(r.error))); msSchedule(15000); break;
+        msLine('err',esc(r.status===409?T('ms_wait_off'):r.status===401?T('ms_wait_auth'):T('ms_wait')(r.error))); msSchedule(15000);
+        logMsWait(r.status?`${r.error} (HTTP ${r.status})`:r.error); break;
       }
+      logMsBack();
       await patchCode(row.id,msResult(row,r),true);
       await refreshAll();
     }
@@ -1059,10 +1126,11 @@ document.querySelectorAll('nav.tabs-main button').forEach(b=>b.onclick=()=>showV
 
 openDB().then(async()=>{
   applyLang(); renderHist(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll();
+  kmLog('info','info',`Сканер открыт · ${HOSTED?'адрес ATV Picker':location.host} · кодов в базе ${lastCodes.length}, свободных ${lastCodes.filter(c=>!c.used_at).length}${supply?` · приёмка ${supply.name}`:''} · ${navigator.onLine?'сеть есть':'сети нет'}`);
   if(msSetup==='bad') msLine('err',esc(T('setup_bad')));
   if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
-  msPump();
-}).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; });
+  msPump(); logPump();
+}).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; kmLog('error','error','База планшета не открылась: '+e); });
 </script>
 </body>
 </html>
