@@ -47,6 +47,8 @@
   button{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--line);background:var(--white);cursor:pointer;color:var(--ink)}
   button.primary{background:var(--ink);color:var(--white);border-color:var(--ink)}
   button.small{padding:5px 10px;font-size:13px}
+  .moved{padding:10px 16px;background:#eef4ff;border-bottom:1px solid #c9d8f5;font-size:14px;line-height:1.5}
+  .moved button{margin-left:6px}
   button:disabled{opacity:.5}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .drop{border:2px dashed var(--line);border-radius:8px;padding:22px;text-align:center;color:var(--muted);cursor:pointer}
@@ -109,6 +111,7 @@
   <a class="help-link" href="scanner-help.html" data-i="help_link">Помощь</a>
   <div class="lang row"><button class="on" data-lang="ru">RU</button><button data-lang="zh">中文</button></div>
 </header>
+<div class="moved" id="moved" hidden></div>
 <nav class="tabs-main">
   <button class="on" data-view="scan" data-i="tab_scan">Сканирование</button>
   <button data-view="files" data-i="tab_files">Файлы</button>
@@ -373,6 +376,7 @@ function applyLang(){
   document.querySelectorAll('[data-i]').forEach(el=>el.textContent=T(el.dataset.i));
   document.querySelectorAll('[data-ph]').forEach(el=>el.placeholder=T(el.dataset.ph));
   document.querySelectorAll('.lang button').forEach(b=>b.classList.toggle('on',b.dataset.lang===LANG));
+  try{ renderMoved(); }catch(e){}
   refreshAll();
 }
 document.querySelectorAll('.lang button').forEach(b=>b.onclick=()=>{LANG=b.dataset.lang;try{localStorage.setItem('km_lang',LANG)}catch(e){};applyLang();});
@@ -773,8 +777,7 @@ $('#printAll').onclick=()=>exportPDF(null,true);
 const b64=u8=>{let s='';for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s);};
 const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 $('#backup').onclick=async()=>{
-  const files=(await allFiles()).map(f=>({...f,pdf:b64(f.pdf)})); const codes=await allCodes();
-  const blob=new Blob([JSON.stringify({v:1,files,codes})],{type:'application/json'});
+  const blob=new Blob([JSON.stringify(await dbExport())],{type:'application/json'});
   download(URL.createObjectURL(blob),`kmscan_backup_${new Date().toISOString().slice(0,10)}.json`);
 };
 $('#restoreBtn').onclick=()=>$('#restore').click();
@@ -782,10 +785,7 @@ $('#restore').addEventListener('change',async()=>{
   const f=$('#restore').files[0]; $('#restore').value=''; if(!f) return;
   let data; try{ data=JSON.parse(await f.text()); }catch(e){ alert(e.message); return; }
   if(!data||!data.files||!data.codes||!confirm(T('restore_q')(data.codes.length))) return;
-  const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear();
-  for(const fl of data.files) t.objectStore('files').put({...fl,pdf:unb64(fl.pdf)});
-  for(const c of data.codes) t.objectStore('codes').put(c);
-  await txDone(t); alert(T('restored')); refreshAll();
+  await dbImport(data); kmLog('info','info',`База загружена из файла: кодов ${data.codes.length}`); alert(T('restored')); refreshAll();
 });
 $('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear(); await txDone(t); try{ localStorage.removeItem(HIST_KEY); }catch(e){} renderHist(); refreshAll(); };
 
@@ -887,6 +887,83 @@ function logScan(d,raw,keys,isEan,recovered,row){
 let msWaitNote='';
 function logMsWait(text){ if(text!==msWaitNote){ msWaitNote=text; kmLog('ms','warn',`Не отправлено в «МойСклад»: ${text} — повтор сам`); } }
 function logMsBack(){ if(msWaitNote){ msWaitNote=''; kmLog('ms','info','Связь с «МойСклад» восстановлена, очередь уходит'); } }
+
+// ============================================================ переезд на адрес ATV Picker
+// Сканер теперь живёт на сервере ATV Picker (/km/). Старый адрес (GitHub Pages) работает как раньше, пока Роман не
+// попросит перейти: тогда кнопка «Перенести на новый адрес» отдаёт базу планшета и настройки серверу
+// (/api/receiving/transfer), а новая страница забирает их по одноразовому id. База на старом адресе остаётся как была.
+const NEW_HOME='https://201-24-62-64.sslip.io';
+const homeUrl=()=>(msCfg().url||NEW_HOME).replace(/\/+$/,'');
+const MOVE_LS=['km_supply','km_supply_groups','km_hist','km_lang','km_device','km_logseq','km_logq'];
+const L2=(ru,zh)=>LANG==='zh'?zh:ru;
+async function dbExport(){ const files=(await allFiles()).map(f=>({...f,pdf:b64(f.pdf)})); return {v:1,files,codes:await allCodes()}; }
+async function dbImport(data){
+  const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear();
+  for(const fl of data.files) t.objectStore('files').put({...fl,pdf:unb64(fl.pdf)});
+  for(const c of data.codes) t.objectStore('codes').put(c);
+  await txDone(t);
+}
+// база — десятки МБ: свой запрос с долгим ожиданием (обычный api() ждёт 20 с)
+async function bigFetch(method,path,body){
+  const c=msCfg();
+  try{
+    const r=await fetch(`${c.url}/api/receiving/${path}`,{method,
+      headers:{Authorization:'Bearer '+c.token,...(body?{'Content-Type':'application/json'}:{})},
+      body:body?JSON.stringify(body):undefined, signal:AbortSignal.timeout?AbortSignal.timeout(600000):undefined});
+    let data={}; try{ data=await r.json(); }catch(e){}
+    return {ok:r.ok, status:r.status, data, error:data.error||`HTTP ${r.status}`};
+  }catch(e){ return {ok:false, status:0, data:{}, error:e&&e.name==='TimeoutError'?T('net_timeout'):T('net_none')}; }
+}
+function renderMoved(){
+  const el=$('#moved');
+  if(HOSTED||!/^https?:$/.test(location.protocol)){ el.hidden=true; return; }
+  el.hidden=false;
+  const where=`${homeUrl()}/km/`;
+  el.innerHTML=msOn()
+    ?`<b>${esc(L2('Сканер переехал','扫描器已迁移'))}</b> ${esc(L2('на адрес программы ATV Picker. Здесь можно работать и дальше. Когда Роман скажет — перенеси базу одной кнопкой:','到 ATV Picker 的地址。这里仍可继续使用。罗曼通知后，一键迁移数据库：'))} <button class="primary small" id="moveBtn">${esc(L2('Перенести на новый адрес','迁移到新地址'))}</button>`
+    :`<b>${esc(L2('Сканер переехал','扫描器已迁移'))}</b>: <a href="${esc(where)}">${esc(where)}</a>. ${esc(L2('Здесь можно работать и дальше. Чтобы перейти, сохрани базу в файл (вкладка «Файлы») и загрузи её на новом адресе.','这里仍可继续使用。迁移方法：在“文件”页保存数据库文件，然后在新地址加载。'))}`;
+  const b=$('#moveBtn'); if(b) b.onclick=moveOut;
+}
+async function moveOut(){
+  const files=(await allFiles()).length, codes=lastCodes.length;
+  if(!confirm(L2(`Перенести базу (кодов ${codes}, файлов ${files}), приёмку и журнал на новый адрес ${homeUrl()}/km/?\n\nЗдесь всё останется как есть.`,`把数据库（代码 ${codes}，文件 ${files}）迁移到新地址 ${homeUrl()}/km/？\n\n这里的数据保持不变。`))) return;
+  const b=$('#moveBtn'); b.disabled=true; b.textContent=L2('Переношу…','迁移中…');
+  const data=await dbExport(); data.ls={};
+  for(const k of MOVE_LS){ const v=LS.get(k); if(v!=null) data.ls[k]=v; }
+  const r=await bigFetch('POST','transfer',data);
+  if(!r.ok||!r.data.id){
+    b.disabled=false; b.textContent=L2('Перенести на новый адрес','迁移到新地址');
+    kmLog('error','error',`Перенос базы на новый адрес не удался: ${r.error}`);
+    alert(L2(`Не получилось перенести: ${r.error}\n\nМожно сохранить базу в файл (вкладка «Файлы») и загрузить её на новом адресе.`,`迁移失败：${r.error}\n\n可以在“文件”页保存数据库文件，然后在新地址加载。`));
+    return;
+  }
+  kmLog('info','info',`База отправлена на новый адрес: кодов ${codes}, файлов ${files}`);
+  location.href=`${homeUrl()}/km/#t=${encodeURIComponent(msCfg().token)}&move=${encodeURIComponent(r.data.id)}`;
+}
+// новая страница: забрать базу по id из ссылки переноса, удалить копию на сервере и перезагрузиться
+async function moveIn(id){
+  msLine('',esc(L2('Переношу базу со старого адреса…','正在从旧地址迁移数据库…')));
+  const r=await bigFetch('GET','transfer/'+encodeURIComponent(id));
+  const d=r.data;
+  if(!r.ok||!d||!Array.isArray(d.files)||!Array.isArray(d.codes)){
+    const why=r.ok?L2('файл базы повреждён','数据库文件损坏'):r.error;
+    msLine('err',esc(L2(`База со старого адреса не перенеслась: ${why}. Сохрани её в файл на старом адресе и загрузи здесь (вкладка «Файлы»).`,`旧地址的数据库未迁移：${why}。请在旧地址保存为文件，再在这里加载（“文件”页）。`)));
+    kmLog('error','error',`Перенос базы со старого адреса не удался: ${why}`);
+    return;
+  }
+  if(lastCodes.length&&!confirm(L2(`На этом адресе уже есть база (кодов ${lastCodes.length}). Заменить её базой со старого адреса (кодов ${d.codes.length})?`,`这里已有数据库（代码 ${lastCodes.length}）。用旧地址的数据库（代码 ${d.codes.length}）替换吗？`))){ msLine('',''); return; }
+  await dbImport(d);
+  for(const [k,v] of Object.entries(d.ls||{})) if(MOVE_LS.includes(k)&&typeof v==='string') LS.set(k,v);
+  LS.set('km_moved',String(d.codes.length));
+  await bigFetch('DELETE','transfer/'+encodeURIComponent(id));
+  location.reload();
+}
+function movedNote(){
+  const n=LS.get('km_moved'); if(n==null) return;
+  LS.set('km_moved',null);
+  msLine('ok',esc(L2(`База перенесена со старого адреса: кодов ${n}. Дальше работай здесь.`,`数据库已从旧地址迁移：代码 ${n}。之后请在这里使用。`)));
+  kmLog('info','ok',`База перенесена со старого адреса: кодов ${n}`);
+}
 
 function setSupply(s){
   const was=supply?`${T('sup_word')} ${supply.name}`:null;
@@ -1085,9 +1162,10 @@ function msCell(c){
 // Одной ссылкой: <сервер>/km/#t=<токен> (старый адрес: …/km-scanner/#ms=<адрес сервера>&t=<токен>).
 // Сохраняем в планшет и сразу стираем из адресной строки. На старом адресе сервер называем человеку и спрашиваем:
 // чужая ссылка не должна молча увести коды на посторонний сервер. С /km/ токен уходит тому же серверу — не спрашиваем.
-let msSetup=null;
+let msSetup=null, msMove=null;
 (function(){
   const h=new URLSearchParams(location.hash.slice(1));
+  if(HOSTED&&/^[A-Za-z0-9_-]{16,40}$/.test(h.get('move')||'')) msMove=h.get('move');
   const u=HOSTED?location.origin:(h.get('ms')||'').trim().replace(/\/+$/,''), t=(h.get('t')||'').trim();
   if(!h.has('ms')&&!t) return;
   history.replaceState(null,'',location.pathname+location.search);
@@ -1108,9 +1186,9 @@ $('#msSave').onclick=async()=>{
   m.className='msg'; m.textContent=T('ms_checking');
   const r=await msStatus();
   if(r.ok){ m.className='msg'; m.textContent=T('ms_ok')(r.data.writes); msPump(); } else { m.className='msg err'; m.textContent=T('ms_fail')(r.error); }
-  renderSupply();
+  renderSupply(); renderMoved();
 };
-$('#msForget').onclick=()=>{ LS.set('km_ms_token',null); $('#msToken').value=''; setSupply(null); msLine('',''); $('#msMsg').className='msg'; $('#msMsg').textContent=T('ms_off'); };
+$('#msForget').onclick=()=>{ setTimeout(renderMoved,0); LS.set('km_ms_token',null); $('#msToken').value=''; setSupply(null); msLine('',''); $('#msMsg').className='msg'; $('#msMsg').textContent=T('ms_off'); };
 window.addEventListener('online',()=>msPump());
 setInterval(()=>{ if(lastCodes.some(c=>c.ms==='pending')) msPump(); },30000);
 
@@ -1129,6 +1207,8 @@ openDB().then(async()=>{
   kmLog('info','info',`Сканер открыт · ${HOSTED?'адрес ATV Picker':location.host} · кодов в базе ${lastCodes.length}, свободных ${lastCodes.filter(c=>!c.used_at).length}${supply?` · приёмка ${supply.name}`:''} · ${navigator.onLine?'сеть есть':'сети нет'}`);
   if(msSetup==='bad') msLine('err',esc(T('setup_bad')));
   if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
+  renderMoved(); movedNote();
+  if(msMove&&msSetup==='ok') await moveIn(msMove);
   msPump(); logPump();
 }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; kmLog('error','error','База планшета не открылась: '+e); });
 </script>
