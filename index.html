@@ -80,11 +80,27 @@
   main{padding-bottom:100px}
   .drop{padding:28px;font-size:17px}
   .drop .bigplus{display:block;font-size:48px;line-height:1;margin-bottom:6px;color:var(--ink)}
+  /* «МойСклад»: приёмка */
+  .supply{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;padding:10px 12px;margin-bottom:6px;border-radius:8px;border:1px solid var(--line);background:var(--paper);font-size:14px}
+  .supply.on{background:#e8f0fb;border-color:#2b6cb0}
+  .supply .what{flex:1;min-width:220px}
+  .supply .more{flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:13px}
+  .msline{margin-top:10px;font-size:15px;color:var(--muted);min-height:1.4em}
+  .msline.ok{color:var(--ok)} .msline.err{color:var(--bad);font-weight:600} .msline.warn{color:var(--warn);font-weight:600}
+  .msline .row{margin-top:6px}
+  .pill.ms-sent{background:var(--ok-bg);color:var(--ok)} .pill.ms-pending{background:#e8f0fb;color:#2b6cb0}
+  .pill.ms-err{background:var(--bad-bg);color:var(--bad)} .pill.ms-warn{background:var(--warn-bg);color:var(--warn)}
+  input[type=password],select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:6px;font:inherit;background:var(--white);color:var(--ink)}
+  dialog{border:1px solid var(--line);border-radius:10px;padding:0;width:calc(100% - 32px);max-width:560px;max-height:calc(100% - 32px);color:var(--ink)}
+  dialog::backdrop{background:rgba(0,0,0,.35)}
+  dialog .dlg{padding:16px}
+  button.pick{display:block;width:100%;text-align:left;margin-top:6px}
+  button.pick small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
 </style>
 </head>
 <body>
 <header>
-  <h1>КМ-сканер</h1><span class="ver">v2</span>
+  <h1>КМ-сканер</h1><span class="ver">v3</span>
   <div class="stats" id="stats"></div>
   <a class="help-link" href="scanner-help.html" data-i="help_link">Помощь</a>
   <div class="lang row"><button class="on" data-lang="ru">RU</button><button data-lang="zh">中文</button></div>
@@ -98,11 +114,13 @@
 
 <div class="view on" id="view-scan">
   <section>
+    <div class="supply" id="supply" hidden></div>
     <label for="doc" data-i="doc_label">Отгрузка / документ (необязательно)</label>
     <input type="text" id="doc" data-ph="doc_ph" placeholder="например: WB Казань 10.09">
     <label for="scan" data-i="scan_label">Наведи сканер на код и нажми курок</label>
     <form id="scanform" autocomplete="off" action="#"><input type="text" id="scan" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-ph="scan_ph" placeholder="здесь появится код…" autofocus></form>
     <div class="status" id="status"><div class="sub" data-i="scan_hint">Сканируй — курсор встанет в поле сам. Сканер сам нажмёт Enter.</div></div>
+    <div class="msline" id="msline"></div>
     <div class="hist" id="hist"></div>
   </section>
 </div>
@@ -121,6 +139,19 @@
       <button class="primary" id="exportAll" data-i="export_all">Скачать PDF со всеми свободными кодами</button>
       <button id="printAll" data-i="print_all">Печать всех свободных</button>
     </div>
+  </section>
+  <section>
+    <h2 data-i="ms_h">МойСклад: приёмка</h2>
+    <p class="help" data-i="ms_help">Сканер может сам складывать принятые коды в приёмку «МойСклад». Адрес сервера и токен даёт Роман, они хранятся только на этом планшете.</p>
+    <label for="msUrl" data-i="ms_url">Адрес сервера</label>
+    <input type="text" id="msUrl" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label for="msToken" data-i="ms_token">Токен сканера</label>
+    <input type="password" id="msToken" autocomplete="off">
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="msSave" data-i="ms_save">Сохранить и проверить</button>
+      <button id="msForget" data-i="ms_forget">Отключить</button>
+    </div>
+    <div class="msg" id="msMsg"></div>
   </section>
   <section>
     <h2 data-i="backup_h">База данных</h2>
@@ -145,7 +176,7 @@
       <input type="text" id="q" data-ph="q_ph" placeholder="поиск: серийник, товар, размер, отгрузка" style="flex:1;min-width:200px">
     </div>
     <div class="tbl"><table>
-      <thead><tr><th>#</th><th data-i="th_file">Файл</th><th data-i="th_product">Товар</th><th data-i="th_size">Размер</th><th>GTIN</th><th data-i="th_serial">Серийник</th><th data-i="th_status">Статус</th><th data-i="th_when">Когда / куда</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th data-i="th_file">Файл</th><th data-i="th_product">Товар</th><th data-i="th_size">Размер</th><th>GTIN</th><th data-i="th_serial">Серийник</th><th data-i="th_status">Статус</th><th data-i="th_when">Когда / куда</th><th data-i="th_ms">МойСклад</th><th></th></tr></thead>
       <tbody id="codes"></tbody>
     </table></div>
     <div class="help" id="codesNote"></div>
@@ -153,6 +184,7 @@
 </div>
 
 </main>
+<dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
 <label class="fab" id="fab"><span class="plus">+</span><span data-i="fab_text">Добавить PDF</span><input type="file" id="file2" multiple class="overlay"></label>
 
 <script id="pdfworker" type="text/plain">
@@ -250,6 +282,29 @@ const I18N = {
     confirm_del:n=>`Удалить файл «${n}» и все его коды из базы?`, confirm_wipe:'Удалить ВСЮ базу: все файлы и все коды? Это нельзя отменить.',
     no_free:'Нет неиспользованных этикеток', restore_q:n=>`Загрузить базу из файла (${n} кодов)? Текущие данные будут заменены.`, restored:'База загружена.',
     free_name:'свободные_коды', pcs:'шт', shown:n=>`Показано ${n}`, fab_text:'Добавить PDF', not_pdf:'это не PDF-файл',
+    ms_h:'МойСклад: приёмка', ms_help:'Сканер может сам складывать принятые коды в приёмку «МойСклад». Адрес сервера и токен даёт Роман, они хранятся только на этом планшете.',
+    ms_url:'Адрес сервера', ms_token:'Токен сканера', ms_save:'Сохранить и проверить', ms_forget:'Отключить',
+    ms_checking:'Проверяю связь…', ms_ok:w=>w?'Связь есть, запись в «МойСклад» включена.':'Связь есть, но запись в «МойСклад» пока выключена: сканы подождут, пока её включат.',
+    ms_fail:e=>`Нет связи с сервером: ${e}`, ms_off:'Отключено: коды только вычёркиваются из PDF.', ms_bad_url:'Адрес должен начинаться с https://',
+    sup_word:'Приёмка', sup_none:'Приёмка не выбрана — коды только вычёркиваются из PDF.', sup_pick:'Выбрать приёмку', sup_new:'Новая приёмка',
+    sup_change:'Сменить', sup_close:'Закрыть приёмку',
+    sup_active:(n,org,agent,c)=>`Приёмка <b>${n}</b> · ${org} · ${agent} · сканером принято <b>${c}</b>`,
+    sup_close_q:n=>`Закрыть приёмку ${n}? Сканы перестанут в неё попадать. Сам документ в «МойСклад» не меняется.`,
+    sup_close_pending:(n,k)=>`В приёмку ${n} ещё не отправлено ${k} шт. Они отправятся и после закрытия. Закрыть?`,
+    sup_list_h:'Куда складывать товар', sup_loading:'Загружаю приёмки…', sup_empty:'Приёмок нет — создайте новую.', sup_positions:'поз.', sup_scanned:'сканером',
+    sup_writes_off:'Запись в «МойСклад» выключена — сканы подождут, пока её включат.',
+    new_h:'Новая приёмка', new_org:'ИП', new_agent:'Поставщик', new_agent_ph:'начните вводить название', new_comment:'Комментарий (необязательно)',
+    new_comment_ph:'например: фура 11.11', new_create:'Создать приёмку', new_need_agent:'Выберите поставщика из списка',
+    new_store:s=>`Склад: ${s}. Приёмка сразу проведена: товар приходуется при каждом скане.`, cancel:'Отмена',
+    pending_n:n=>`не отправлено в «МойСклад»: ${n}`, choose_n:n=>`ждут выбора карточки: ${n}`, bad_n:n=>`с ошибкой: ${n} (вкладка «Коды»)`, send_now:'Отправить',
+    ms_sending:'МойСклад: отправляю…', ms_added:(a,s,q)=>`МойСклад: +1 ${a} → приёмка ${s} (теперь ${q})`, ms_already:s=>`МойСклад: уже в приёмке ${s}`,
+    ms_elsewhere:s=>`МойСклад: этот код уже принят в другую приёмку (${s}) — второй раз не добавлен`,
+    ms_notfound:g=>`МойСклад: нет товара со штрихкодом ${g} — в приёмку не добавлен. Скажите Артёму.`,
+    ms_choose:'МойСклад: у этого штрихкода несколько карточек. Какая правильная?', ms_error:e=>`МойСклад: ${e}`,
+    ms_wait:e=>`МойСклад: ${e} — код подождёт и уйдёт сам`, ms_wait_off:'МойСклад: запись пока выключена — коды подождут и уйдут сами, когда её включат', ms_wait_auth:'МойСклад: сервер не принял токен сканера — проверьте его на вкладке «Файлы». Коды подождут.', net_none:'нет связи с сервером', net_timeout:'сервер не ответил за 20 с', wait_sending:'Код сейчас отправляется в «МойСклад» — подождите пару секунд.',
+    th_ms:'МойСклад', msst_pending:'ждёт', msst_sent:'в приёмке', msst_error:'ошибка', msst_notfound:'нет товара', msst_choose:'выбрать товар',
+    msst_elsewhere:'другая приёмка', resend:'отправить снова',
+    undo_fail:e=>`Не удалось убрать из приёмки «МойСклад»: ${e}. Код оставлен использованным.`,
   },
   zh: {
     tab_scan:'扫描', tab_files:'文件', tab_codes:'编码', help_link:'帮助', help_what:'怎么办？→',
@@ -273,6 +328,29 @@ const I18N = {
     confirm_del:n=>`删除文件“${n}”及其全部编码？`, confirm_wipe:'删除整个数据库（所有文件和编码）？此操作无法撤销。',
     no_free:'没有未使用的标签', restore_q:n=>`从文件加载数据库（${n} 个编码）？当前数据将被替换。`, restored:'数据库已加载。',
     free_name:'未使用编码', pcs:'个', shown:n=>`显示 ${n} 条`, fab_text:'添加 PDF', not_pdf:'不是 PDF 文件',
+    ms_h:'МойСклад：入库单', ms_help:'扫描器可以把已接受的编码自动加入 МойСклад 的入库单。服务器地址和令牌由 Роман 提供，只保存在这台平板上。',
+    ms_url:'服务器地址', ms_token:'扫描器令牌', ms_save:'保存并检查', ms_forget:'断开',
+    ms_checking:'正在检查连接…', ms_ok:w=>w?'连接正常，已开启写入 МойСклад。':'连接正常，但写入 МойСклад 尚未开启：扫描会等待开启后再发送。',
+    ms_fail:e=>`无法连接服务器：${e}`, ms_off:'已断开：编码只在 PDF 中划掉。', ms_bad_url:'地址必须以 https:// 开头',
+    sup_word:'入库单', sup_none:'未选择入库单 — 编码只在 PDF 中划掉。', sup_pick:'选择入库单', sup_new:'新建入库单',
+    sup_change:'更换', sup_close:'关闭入库单',
+    sup_active:(n,org,agent,c)=>`入库单 <b>${n}</b> · ${org} · ${agent} · 已扫描 <b>${c}</b>`,
+    sup_close_q:n=>`关闭入库单 ${n}？之后的扫描不会再进入该单。МойСклад 中的单据本身不变。`,
+    sup_close_pending:(n,k)=>`入库单 ${n} 还有 ${k} 个未发送，关闭后仍会继续发送。确定关闭？`,
+    sup_list_h:'货物放入哪张入库单', sup_loading:'正在加载入库单…', sup_empty:'没有入库单 — 请新建。', sup_positions:'行', sup_scanned:'已扫描',
+    sup_writes_off:'写入 МойСклад 未开启 — 扫描会等待开启后再发送。',
+    new_h:'新建入库单', new_org:'个体户', new_agent:'供应商', new_agent_ph:'输入名称搜索', new_comment:'备注（可不填）',
+    new_comment_ph:'例如：货车 11.11', new_create:'创建入库单', new_need_agent:'请从列表中选择供应商',
+    new_store:s=>`仓库：${s}。入库单立即过账：每次扫描都会入库。`, cancel:'取消',
+    pending_n:n=>`未发送到 МойСклад：${n}`, choose_n:n=>`等待选择商品卡：${n}`, bad_n:n=>`出错：${n}（见“编码”页）`, send_now:'发送',
+    ms_sending:'МойСклад：正在发送…', ms_added:(a,s,q)=>`МойСклад：+1 ${a} → 入库单 ${s}（现为 ${q}）`, ms_already:s=>`МойСклад：已在入库单 ${s} 中`,
+    ms_elsewhere:s=>`МойСклад：此编码已进入另一张入库单（${s}）— 未重复添加`,
+    ms_notfound:g=>`МойСклад：没有条码为 ${g} 的商品 — 未加入入库单。请告诉 Артём。`,
+    ms_choose:'МойСклад：此条码对应多个商品卡片，哪个是正确的？', ms_error:e=>`МойСклад：${e}`,
+    ms_wait:e=>`МойСклад：${e} — 编码会等待并自动发送`, ms_wait_off:'МойСклад：写入暂未开启 — 开启后编码会自动发送', ms_wait_auth:'МойСклад：服务器不接受扫描器令牌 — 请在“文件”页检查。编码会等待。', net_none:'无法连接服务器', net_timeout:'服务器 20 秒内未响应', wait_sending:'该编码正在发送到 МойСклад，请稍等几秒。',
+    th_ms:'МойСклад', msst_pending:'等待', msst_sent:'已入库', msst_error:'错误', msst_notfound:'无商品', msst_choose:'选择商品',
+    msst_elsewhere:'其他入库单', resend:'重新发送',
+    undo_fail:e=>`无法从 МойСклад 入库单中移除：${e}。编码仍标记为已使用。`,
   }
 };
 let LANG = 'ru';
@@ -461,6 +539,8 @@ async function handleScan(raw,keys=[]){
       else if(row.used_at) d={status:'repeat', message:T('st_repeat'), ...row, file:fn};
       else {
         row.used_at=new Date().toISOString(); row.used_doc=docName;
+        // активная приёмка «МойСклад»: код встаёт в очередь отправки (msPump), скан от сети не зависит
+        if(supply&&msOn()) Object.assign(row,{ms:'pending',ms_supply:supply.id,ms_supply_name:supply.name,ms_err:null,ms_choose:null,ms_options:null});
         const t=tx('codes','readwrite'); t.objectStore('codes').put(row); await txDone(t);
         lastOk={id:row.id, at:Date.now()};
         d={status:'ok', message:T('st_ok'), ...row, file:fn};
@@ -485,7 +565,10 @@ async function handleScan(raw,keys=[]){
   beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
   const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
   $('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')}${d.serial?' · '+esc(d.serial):''} · ${esc(d.message)}${diag?' · '+esc(diag):''}</div>`);
-  refreshAll();
+  // строка «МойСклад» под статусом — про прошлый код; у непринятого кода её не оставляем (кроме вопроса о карточке)
+  if(d.status!=='ok'&&d.status!=='again'&&!$('#msline button')) msLine('','');
+  await refreshAll();
+  if(d.status==='ok'&&d.ms==='pending') msPump();
 }
 // ============================================================ приём со сканера
 // Сканер работает как клавиатура, но на планшетах код часто приходит не одной
@@ -561,18 +644,19 @@ $('#doc').addEventListener('input',()=>{
 });
 document.addEventListener('keydown',e=>{
   const t=e.target;
+  if($('#dlg').open) return;                            // окно приёмки: клавиши — его полям
   if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)) return;
   if(e.ctrlKey||e.metaKey||e.altKey) return;
   if(!(e.key==='Enter'||e.key==='Tab'||e.key==='Shift'||e.key==='Unidentified'||e.key==='Process'||e.keyCode===229||(e.key&&e.key.length===1))) return;
   if(!$('#view-scan').classList.contains('on')) showView('scan');
   scanEl.focus();
 },true);
-document.addEventListener('click',e=>{ if($('#view-scan').classList.contains('on') && !e.target.closest('input,button,a,details,textarea,label')) scanEl.focus(); });
+document.addEventListener('click',e=>{ if($('#view-scan').classList.contains('on') && !$('#dlg').open && !e.target.closest('input,button,a,details,textarea,label,select,dialog')) scanEl.focus(); });
 
 // ============================================================ списки
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let state='all', curFile=null;
-async function refreshAll(){ if(!db) return; const [files,codes]=await Promise.all([allFiles(),allCodes()]); renderStats(codes); renderFiles(files,codes); renderCodes(files,codes); }
+let state='all', curFile=null, lastCodes=[];
+async function refreshAll(){ if(!db) return; const [files,codes]=await Promise.all([allFiles(),allCodes()]); lastCodes=codes; renderStats(codes); renderFiles(files,codes); renderCodes(files,codes); renderSupply(codes); }
 function renderStats(codes){ const t=codes.length, f=codes.filter(c=>!c.used_at).length; $('#stats').innerHTML=T('stats')(t,f,t-f); }
 function renderFiles(files,codes){
   files.sort((a,b)=>b.id-a.id);
@@ -592,12 +676,22 @@ function renderCodes(files,codes){
    <td class="mono">${c.gtin}</td><td class="mono">${esc(c.serial)}</td>
    <td>${c.used_at?`<span class="pill used">${T('used_s')}</span>`:`<span class="pill free">${T('free_s')}</span>`}</td>
    <td>${c.used_at?fmt(c.used_at)+(c.used_doc?' · '+esc(c.used_doc):''):''}</td>
+   <td>${msCell(c)}</td>
    <td><button class="small" onclick="toggle(${c.id})">${c.used_at?T('unmark'):T('mark')}</button></td></tr>`).join('')
-   || `<tr><td colspan="9" class="help">${T('none')}</td></tr>`;
+   || `<tr><td colspan="10" class="help">${T('none')}</td></tr>`;
   $('#codesNote').textContent = rows.length>500 ? T('shown')(500)+' / '+rows.length : '';
 }
-async function toggle(id){ const t=tx('codes','readwrite'), s=t.objectStore('codes'); const r=await req(s.get(id)); if(!r) return;
-  if(r.used_at){r.used_at=null;r.used_doc=null;} else {r.used_at=new Date().toISOString();r.used_doc=T('manual');} s.put(r); await txDone(t); refreshAll(); }
+// «вернуть» у кода, уже лежащего в приёмке «МойСклад», сначала убирает его оттуда (−1); не вышло — код остаётся использованным
+async function toggle(id){
+  const cur=await req(tx('codes').objectStore('codes').get(id)); if(!cur) return;
+  if(cur.used_at&&msSendingId===id){ alert(T('wait_sending')); return; }
+  if(cur.used_at&&cur.ms==='sent'){
+    const r=await api('POST','undo',{supplyId:cur.ms_supply,gtin:cur.gtin,serial:cur.serial});
+    if(!r.ok){ alert(T('undo_fail')(r.error)); return; }
+  }
+  const t=tx('codes','readwrite'), s=t.objectStore('codes'); const r=await req(s.get(id)); if(!r) return;
+  if(r.used_at){ r.used_at=null; r.used_doc=null; Object.assign(r,MS_CLEAR); } else { r.used_at=new Date().toISOString(); r.used_doc=T('manual'); }
+  s.put(r); await txDone(t); refreshAll(); }
 async function delFile(id){ const f=(await allFiles()).find(x=>x.id===id); if(!f||!confirm(T('confirm_del')(f.name))) return;
   const t=tx(['files','codes'],'readwrite'); t.objectStore('files').delete(id);
   const cs=t.objectStore('codes'); const keys=await req(cs.index('file_id').getAllKeys(id)); keys.forEach(k=>cs.delete(k)); await txDone(t); curFile=null; refreshAll(); }
@@ -651,6 +745,221 @@ $('#restore').addEventListener('change',async()=>{
 });
 $('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear(); await txDone(t); refreshAll(); };
 
+// ============================================================ «МойСклад»: приёмка
+// Принятый код уходит на сервер atv-picker (/api/receiving), тот делает +1 в проведённой приёмке «МойСклад».
+// Скан от сети не зависит: код сразу «Принято», а в «МойСклад» уходит из очереди (поле ms у кода в IndexedDB):
+// pending → sent | choose | notfound | elsewhere | error. Нет связи — очередь ждёт и досылает сама.
+const LS={ get:k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+           set:(k,v)=>{ try{ v==null?localStorage.removeItem(k):localStorage.setItem(k,v); }catch(e){} } };
+const MS_CLEAR={ms:null,ms_supply:null,ms_supply_name:null,ms_err:null,ms_choose:null,ms_options:null,ms_qty:null,ms_product:null};
+const msCfg=()=>({url:LS.get('km_ms_url')||'', token:LS.get('km_ms_token')||''});
+const msOn=()=>{ const c=msCfg(); return !!(c.url&&c.token); };
+let supply=null; try{ supply=JSON.parse(LS.get('km_supply')||'null'); }catch(e){}
+// после перезагрузки поле «Отгрузка / документ» пустое — подставим номер активной приёмки
+if(supply&&msOn()&&!$('#doc').value.trim()) $('#doc').value=`${T('sup_word')} ${supply.name}`;
+let msShops=null, msStore='', msSendingId=null, msPumping=false, msTimer=null;
+
+async function api(method,path,body){
+  const c=msCfg();
+  try{
+    const r=await fetch(`${c.url}/api/receiving/${path}`,{method,
+      headers:{Authorization:'Bearer '+c.token,...(body?{'Content-Type':'application/json'}:{})},
+      body:body?JSON.stringify(body):undefined, signal:AbortSignal.timeout?AbortSignal.timeout(20000):undefined});
+    let data={}; try{ data=await r.json(); }catch(e){}
+    return {ok:r.ok, status:r.status, data, error:data.error||`HTTP ${r.status}`};
+  }catch(e){ return {ok:false, status:0, data:{}, error:e&&e.name==='TimeoutError'?T('net_timeout'):T('net_none')}; }
+}
+// нет связи, сервер или «МойСклад» недоступны, запись выключена, неверный токен — ждём и повторяем; остальное — ошибка кода
+const msRetryable=s=>s===0||s===401||s===409||s===429||s>=500;
+const shortOrg=s=>String(s||'').replace(/^ИП\s+(\S+)\s+(\S)\S*\s+(\S)\S*$/,'ИП $1 $2. $3.');
+const fmtDay=m=>{ const x=/^(\d{4})-(\d\d)-(\d\d)/.exec(m||''); return x?`${x[3]}.${x[2]}.${x[1]}`:''; };
+const newId=()=>(crypto.randomUUID?crypto.randomUUID():[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join(''));
+
+function setSupply(s){
+  const was=supply?`${T('sup_word')} ${supply.name}`:null;
+  supply=s; LS.set('km_supply',s?JSON.stringify(s):null);
+  // поле «Отгрузка / документ»: номер приёмки, если человек не вписал своё
+  const doc=$('#doc'), now=s?`${T('sup_word')} ${s.name}`:'';
+  if(doc.value.trim()===''||doc.value===was) doc.value=now;
+  renderSupply();
+}
+function renderSupply(codes=lastCodes){
+  const el=$('#supply');
+  if(!msOn()){ el.hidden=true; return; }
+  el.hidden=false; el.className='supply'+(supply?' on':'');
+  let h;
+  if(supply){
+    const n=codes.filter(c=>c.ms_supply===supply.id&&c.ms==='sent').length;
+    h=`<div class="what">${T('sup_active')(esc(supply.name),esc(supply.org),esc(supply.agent),n)}</div>
+      <button class="small" data-act="pick">${esc(T('sup_change'))}</button><button class="small" data-act="close">${esc(T('sup_close'))}</button>`;
+  } else h=`<div class="what">${esc(T('sup_none'))}</div>
+      <button class="small primary" data-act="pick">${esc(T('sup_pick'))}</button><button class="small" data-act="new">${esc(T('sup_new'))}</button>`;
+  const pend=codes.filter(c=>c.ms==='pending').length, ch=codes.filter(c=>c.ms==='choose').length,
+    bad=codes.filter(c=>['error','notfound','elsewhere'].includes(c.ms)).length;
+  if(pend||ch||bad) h+=`<div class="more">${[pend?esc(T('pending_n')(pend)):'',ch?esc(T('choose_n')(ch)):'',bad?esc(T('bad_n')(bad)):''].filter(Boolean).join(' · ')}
+      <button class="small" data-act="send">${esc(T('send_now'))}</button></div>`;
+  el.innerHTML=h;
+}
+$('#supply').addEventListener('click',e=>{
+  const act=e.target.closest('[data-act]')?.dataset.act;
+  if(act==='pick') openPick(); else if(act==='new') openNew(); else if(act==='close') closeSupply(); else if(act==='send') resendAll();
+});
+function closeSupply(){
+  if(!supply) return;
+  const pend=lastCodes.filter(c=>c.ms==='pending'&&c.ms_supply===supply.id).length;
+  if(!confirm(pend?T('sup_close_pending')(supply.name,pend):T('sup_close_q')(supply.name))) return;
+  setSupply(null);
+}
+
+// ---- окно: выбрать или создать приёмку
+const dlg=$('#dlg');
+function dlgOpen(html){
+  $('#dlgBody').innerHTML=html;
+  $('#dlgBody').querySelectorAll('[data-act=x]').forEach(b=>b.onclick=dlgClose);
+  $('#dlgBody').querySelectorAll('[data-act=new]').forEach(b=>b.onclick=openNew);
+  if(!dlg.open) dlg.showModal();
+}
+function dlgClose(){ if(dlg.open) dlg.close(); }
+dlg.addEventListener('close',()=>setTimeout(()=>scanEl.focus(),50));
+async function msStatus(){
+  const r=await api('GET','status');
+  if(r.ok){ msShops=r.data.shops; msStore=r.data.store; }
+  return r;
+}
+async function openPick(){
+  dlgOpen(`<h2>${esc(T('sup_list_h'))}</h2><div id="dlgList" class="help">${esc(T('sup_loading'))}</div>
+    <div class="row" style="margin-top:14px"><button data-act="new">${esc(T('sup_new'))}</button><button data-act="x" style="margin-left:auto">${esc(T('cancel'))}</button></div>`);
+  const [r,st]=await Promise.all([api('GET','supplies'),msStatus()]);
+  const box=$('#dlgList'); if(!box) return;
+  if(!r.ok){ box.className='msg err'; box.textContent=T('ms_fail')(r.error); return; }
+  const org=a=>shortOrg((r.data.shops.find(s=>s.account===a)||{}).organization);
+  const list=r.data.supplies;
+  box.className='';
+  box.innerHTML=(st.ok&&!st.data.writes?`<p class="msg err">${esc(T('sup_writes_off'))}</p>`:'')
+    +(list.length?list.map((s,k)=>`<button class="pick" data-k="${k}"><b>${esc(s.name)}</b> · ${esc(fmtDay(s.moment))} · ${esc(org(s.account))}
+      <small>${esc(s.agent)} · ${esc(s.store)} · ${s.positions} ${esc(T('sup_positions'))}${s.scanned?` · ${esc(T('sup_scanned'))} ${s.scanned}`:''}${s.description?` · ${esc(s.description)}`:''}</small></button>`).join('')
+      :`<p class="help">${esc(T('sup_empty'))}</p>`);
+  box.querySelectorAll('button.pick').forEach(b=>b.onclick=()=>{
+    const s=list[+b.dataset.k]; setSupply({id:s.id,name:s.name,account:s.account,org:org(s.account),agent:s.agent}); dlgClose();
+  });
+}
+async function openNew(){
+  if(!msShops){ const st=await msStatus(); if(!st.ok){ dlgOpen(`<p class="msg err">${esc(T('ms_fail')(st.error))}</p><div class="row"><button data-act="x">${esc(T('cancel'))}</button></div>`); return; } }
+  const requestId=newId();                       // повтор после обрыва найдёт ту же приёмку, а не создаст вторую
+  dlgOpen(`<h2>${esc(T('new_h'))}</h2>
+    <label for="nOrg">${esc(T('new_org'))}</label><select id="nOrg">${msShops.map(s=>`<option value="${esc(s.account)}">${esc(s.organization)}</option>`).join('')}</select>
+    <label for="nAgentQ">${esc(T('new_agent'))}</label><input type="text" id="nAgentQ" placeholder="${esc(T('new_agent_ph'))}" autocomplete="off"><div id="nAgents"></div>
+    <label for="nComment">${esc(T('new_comment'))}</label><input type="text" id="nComment" placeholder="${esc(T('new_comment_ph'))}" autocomplete="off">
+    <p class="help">${esc(T('new_store')(msStore))}</p><div class="msg err" id="nMsg"></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="nCreate">${esc(T('new_create'))}</button><button data-act="x" style="margin-left:auto">${esc(T('cancel'))}</button></div>`);
+  let agent=null, qt=null;
+  $('#nAgentQ').addEventListener('input',()=>{
+    agent=null; clearTimeout(qt);
+    qt=setTimeout(async()=>{
+      const q=$('#nAgentQ').value.trim(), box=$('#nAgents');
+      if(q.length<2){ box.innerHTML=''; return; }
+      const r=await api('GET','agents?q='+encodeURIComponent(q));
+      if($('#nAgentQ').value.trim()!==q) return;     // уже ввели дальше
+      if(!r.ok){ box.innerHTML=`<p class="msg err">${esc(r.error)}</p>`; return; }
+      box.innerHTML=r.data.agents.map((a,k)=>`<button class="pick small" data-k="${k}">${esc(a.name)}</button>`).join('')||`<p class="help">${esc(T('none'))}</p>`;
+      box.querySelectorAll('button').forEach(b=>b.onclick=()=>{ agent=r.data.agents[+b.dataset.k]; $('#nAgentQ').value=agent.name; box.innerHTML=''; });
+    },300);
+  });
+  $('#nCreate').onclick=async()=>{
+    if(!agent){ $('#nMsg').textContent=T('new_need_agent'); return; }
+    const account=$('#nOrg').value, btn=$('#nCreate'); btn.disabled=true; $('#nMsg').textContent='';
+    const r=await api('POST','supplies',{account,agentId:agent.id,comment:$('#nComment').value,requestId});
+    btn.disabled=false;
+    if(!r.ok){ $('#nMsg').textContent=r.error; return; }
+    const s=r.data.supply;
+    setSupply({id:s.id,name:s.name,account,org:shortOrg((msShops.find(x=>x.account===account)||{}).organization),agent:s.agent});
+    dlgClose();
+  };
+}
+
+// ---- очередь отправки
+function msLine(cls,html){ const el=$('#msline'); el.className='msline'+(cls?' '+cls:''); el.innerHTML=html; }
+async function patchCode(id,patch,onlyIfPending=false){
+  const t=tx('codes','readwrite'), s=t.objectStore('codes'); const r=await req(s.get(id));
+  if(r&&(!onlyIfPending||r.ms==='pending')){ Object.assign(r,patch); s.put(r); }
+  await txDone(t);
+}
+function msSchedule(ms){ clearTimeout(msTimer); msTimer=setTimeout(msPump,ms); }
+async function msPump(){
+  if(msPumping||!msOn()) return;
+  msPumping=true;
+  try{
+    for(;;){
+      const row=(await allCodes()).filter(c=>c.ms==='pending').sort((a,b)=>String(a.used_at).localeCompare(String(b.used_at)))[0];
+      if(!row) break;
+      msSendingId=row.id; msLine('',esc(T('ms_sending')));
+      const r=await api('POST','scan',{supplyId:row.ms_supply,gtin:row.gtin,serial:row.serial,...(row.ms_choose?{choose:row.ms_choose}:{})});
+      msSendingId=null;
+      if(!r.ok&&msRetryable(r.status)){
+        msLine('err',esc(r.status===409?T('ms_wait_off'):r.status===401?T('ms_wait_auth'):T('ms_wait')(r.error))); msSchedule(15000); break;
+      }
+      await patchCode(row.id,msResult(row,r),true);
+      await refreshAll();
+    }
+    // код ждёт выбора карточки — вопрос остаётся на экране, даже если за ним отправлялись другие
+    const ch=(await allCodes()).find(c=>c.ms==='choose');
+    if(ch) showChoose(ch.gtin,ch.ms_options||[]);
+  }finally{ msPumping=false; msSendingId=null; }
+}
+// ответ сервера → поля кода и строка под статусом скана
+function msResult(row,r){
+  const d=r.data||{}, p=d.product||{};
+  if(!r.ok){ msLine('err',esc(T('ms_error')(r.error))); beep('warn'); return {ms:'error',ms_err:r.error}; }
+  if(d.status==='added'){ msLine('ok',esc(T('ms_added')(p.article||p.name||'',d.supply,d.quantity))); return {ms:'sent',ms_err:null,ms_qty:d.quantity,ms_product:p.article||p.name||''}; }
+  if(d.status==='already'){ msLine('ok',esc(T('ms_already')(d.supply))); return {ms:'sent',ms_err:null}; }
+  if(d.status==='elsewhere'){ msLine('err',esc(T('ms_elsewhere')(d.supply))); beep('repeat'); return {ms:'elsewhere',ms_err:d.supply}; }
+  if(d.status==='choose'){ beep('warn'); return {ms:'choose',ms_options:d.options||[]}; }
+  if(d.status==='not_found'){ msLine('warn',esc(T('ms_notfound')(row.gtin))); beep('warn'); return {ms:'notfound',ms_err:null}; }
+  msLine('err',esc(T('ms_error')(JSON.stringify(d).slice(0,120)))); return {ms:'error',ms_err:'?'};
+}
+// у штрихкода несколько карточек: выбор — кнопками прямо под статусом, скан не блокируется
+function showChoose(gtin,options){
+  msLine('warn',`${esc(T('ms_choose'))} <span class="help">GTIN ${esc(gtin)}</span><div class="row">`
+    +options.map((o,k)=>`<button class="small" data-k="${k}">${esc(o.name)}${o.article?` · ${esc(o.article)}`:''}</button>`).join('')+'</div>');
+  $('#msline').querySelectorAll('button').forEach(b=>b.onclick=async()=>{
+    const href=options[+b.dataset.k].href;
+    // этот выбор — для всех кодов с тем же GTIN, что ждут выбора
+    for(const c of (await allCodes()).filter(c=>c.ms==='choose'&&c.gtin===gtin)) await patchCode(c.id,{ms:'pending',ms_choose:href,ms_options:null});
+    msLine('','');
+    await refreshAll(); msPump();
+  });
+}
+async function resend(id){ await patchCode(id,{ms:'pending',ms_err:null}); await refreshAll(); msPump(); }
+async function resendAll(){
+  for(const c of lastCodes.filter(c=>c.ms==='error'||c.ms==='notfound')) await patchCode(c.id,{ms:'pending',ms_err:null});
+  const ch=lastCodes.find(c=>c.ms==='choose'); if(ch) showChoose(ch.gtin,ch.ms_options||[]);
+  await refreshAll(); msPump();
+}
+function msCell(c){
+  if(!c.ms) return '';
+  const k={pending:'ms-pending',sent:'ms-sent',error:'ms-err',elsewhere:'ms-err',notfound:'ms-warn',choose:'ms-warn'}[c.ms]||'ms-warn';
+  const title=[c.ms_supply_name?`${T('sup_word')} ${c.ms_supply_name}`:'',c.ms_product||'',c.ms_err||''].filter(Boolean).join(' · ');
+  const again=['error','notfound','choose'].includes(c.ms)?` <button class="small" onclick="resend(${c.id})">${esc(T('resend'))}</button>`:'';
+  return `<span class="pill ${k}" title="${esc(title)}">${esc(T('msst_'+c.ms))}</span>${again}`;
+}
+
+// ---- настройка связи (вкладка «Файлы»)
+$('#msUrl').value=msCfg().url; $('#msToken').value=msCfg().token;
+$('#msSave').onclick=async()=>{
+  let url=$('#msUrl').value.trim().replace(/\/+$/,''); const m=$('#msMsg');
+  if(url&&!/^https?:\/\//i.test(url)) url='https://'+url;
+  if(url&&!/^https:\/\//i.test(url)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url)){ m.className='msg err'; m.textContent=T('ms_bad_url'); return; }
+  $('#msUrl').value=url; LS.set('km_ms_url',url||null); LS.set('km_ms_token',$('#msToken').value.trim()||null);
+  if(!msOn()){ m.className='msg'; m.textContent=T('ms_off'); renderSupply(); return; }
+  m.className='msg'; m.textContent=T('ms_checking');
+  const r=await msStatus();
+  if(r.ok){ m.className='msg'; m.textContent=T('ms_ok')(r.data.writes); msPump(); } else { m.className='msg err'; m.textContent=T('ms_fail')(r.error); }
+  renderSupply();
+};
+$('#msForget').onclick=()=>{ LS.set('km_ms_token',null); $('#msToken').value=''; setSupply(null); msLine('',''); $('#msMsg').className='msg'; $('#msMsg').textContent=T('ms_off'); };
+window.addEventListener('online',()=>msPump());
+setInterval(()=>{ if(lastCodes.some(c=>c.ms==='pending')) msPump(); },30000);
+
 // ============================================================ загрузка файлов / навигация
 const drop=$('#drop'), fileInp=$('#file');
 
@@ -661,7 +970,7 @@ for(const inp of [fileInp,$('#file2')]) inp.addEventListener('change',()=>{const
 function showView(v){ document.querySelectorAll('.view').forEach(x=>x.classList.toggle('on',x.id==='view-'+v)); document.querySelectorAll('nav.tabs-main button').forEach(b=>b.classList.toggle('on',b.dataset.view===v)); if(v==='scan') setTimeout(()=>$('#scan').focus(),50); }
 document.querySelectorAll('nav.tabs-main button').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
-openDB().then(()=>{ applyLang(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; });
+openDB().then(async()=>{ applyLang(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll(); msPump(); }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; });
 </script>
 </body>
 </html>
