@@ -83,6 +83,10 @@
   /* «МойСклад»: приёмка */
   .supply{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;padding:10px 12px;margin-bottom:6px;border-radius:8px;border:1px solid var(--line);background:var(--paper);font-size:14px}
   .supply.on{background:#e8f0fb;border-color:#2b6cb0}
+  .supply.on.lam{background:#f4eafb;border-color:#7b3fb0}
+  .supply .grp{flex-basis:100%;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+  .supply .grp button.on{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+  .supply.lam .grp button.on{background:#7b3fb0;border-color:#7b3fb0}
   .supply .what{flex:1;min-width:220px}
   .supply .more{flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:13px}
   .msline{margin-top:10px;font-size:15px;color:var(--muted);min-height:1.4em}
@@ -289,6 +293,8 @@ const I18N = {
     sup_word:'Приёмка', sup_none:'Приёмка не выбрана — коды только вычёркиваются из PDF.', sup_pick:'Выбрать приёмку', sup_new:'Новая приёмка',
     sup_change:'Сменить', sup_close:'Закрыть приёмку',
     sup_active:(n,org,agent,c)=>`Приёмка <b>${n}</b> · ${org} · ${agent} · сканером принято <b>${c}</b>`,
+    sup_grp:'Карточки:', grp_new:'Одежда NEW', grp_lamoda:'Ламода', new_grp:'Карточки товара',
+    ms_notfound_g:(g,f,o)=>`МойСклад: в группе «${f}» нет товара со штрихкодом ${g} — в приёмку не добавлен.`+(o?` Такая карточка есть в «${o}» — проверьте переключатель «Карточки».`:' Скажите Артёму.'),
     sup_close_q:n=>`Закрыть приёмку ${n}? Сканы перестанут в неё попадать. Сам документ в «МойСклад» не меняется.`,
     sup_close_pending:(n,k)=>`В приёмку ${n} ещё не отправлено ${k} шт. Они отправятся и после закрытия. Закрыть?`,
     sup_list_h:'Куда складывать товар', sup_loading:'Загружаю приёмки…', sup_empty:'Приёмок нет — создайте новую.', sup_positions:'поз.', sup_scanned:'сканером',
@@ -335,6 +341,8 @@ const I18N = {
     sup_word:'入库单', sup_none:'未选择入库单 — 编码只在 PDF 中划掉。', sup_pick:'选择入库单', sup_new:'新建入库单',
     sup_change:'更换', sup_close:'关闭入库单',
     sup_active:(n,org,agent,c)=>`入库单 <b>${n}</b> · ${org} · ${agent} · 已扫描 <b>${c}</b>`,
+    sup_grp:'商品卡：', grp_new:'Одежда NEW', grp_lamoda:'Lamoda', new_grp:'商品卡',
+    ms_notfound_g:(g,f,o)=>`МойСклад：“${f}”组中没有条码为 ${g} 的商品 — 未加入入库单。`+(o?`该商品卡在“${o}”中 — 请检查“商品卡”切换。`:'请告诉 Артём。'),
     sup_close_q:n=>`关闭入库单 ${n}？之后的扫描不会再进入该单。МойСклад 中的单据本身不变。`,
     sup_close_pending:(n,k)=>`入库单 ${n} 还有 ${k} 个未发送，关闭后仍会继续发送。确定关闭？`,
     sup_list_h:'货物放入哪张入库单', sup_loading:'正在加载入库单…', sup_empty:'没有入库单 — 请新建。', sup_positions:'行', sup_scanned:'已扫描',
@@ -540,7 +548,8 @@ async function handleScan(raw,keys=[]){
       else {
         row.used_at=new Date().toISOString(); row.used_doc=docName;
         // активная приёмка «МойСклад»: код встаёт в очередь отправки (msPump), скан от сети не зависит
-        if(supply&&msOn()) Object.assign(row,{ms:'pending',ms_supply:supply.id,ms_supply_name:supply.name,ms_err:null,ms_choose:null,ms_options:null});
+        // группа карточек фиксируется в момент скана: переключили потом — код уйдёт в той группе, в какой его сканировали
+        if(supply&&msOn()) Object.assign(row,{ms:'pending',ms_supply:supply.id,ms_supply_name:supply.name,ms_group:supply.group||'new',ms_err:null,ms_choose:null,ms_options:null});
         const t=tx('codes','readwrite'); t.objectStore('codes').put(row); await txDone(t);
         lastOk={id:row.id, at:Date.now()};
         d={status:'ok', message:T('st_ok'), ...row, file:fn};
@@ -751,13 +760,19 @@ $('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx
 // pending → sent | choose | notfound | elsewhere | error. Нет связи — очередь ждёт и досылает сама.
 const LS={ get:k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } },
            set:(k,v)=>{ try{ v==null?localStorage.removeItem(k):localStorage.setItem(k,v); }catch(e){} } };
-const MS_CLEAR={ms:null,ms_supply:null,ms_supply_name:null,ms_err:null,ms_choose:null,ms_options:null,ms_qty:null,ms_product:null};
+const MS_CLEAR={ms:null,ms_supply:null,ms_supply_name:null,ms_group:null,ms_err:null,ms_choose:null,ms_options:null,ms_qty:null,ms_product:null};
 const msCfg=()=>({url:LS.get('km_ms_url')||'', token:LS.get('km_ms_token')||''});
 const msOn=()=>{ const c=msCfg(); return !!(c.url&&c.token); };
 let supply=null; try{ supply=JSON.parse(LS.get('km_supply')||'null'); }catch(e){}
 // после перезагрузки поле «Отгрузка / документ» пустое — подставим номер активной приёмки
 if(supply&&msOn()&&!$('#doc').value.trim()) $('#doc').value=`${T('sup_word')} ${supply.name}`;
-let msShops=null, msStore='', msSendingId=null, msPumping=false, msTimer=null;
+let msShops=null, msStore='', msDefaultAgent=null, msSendingId=null, msPumping=false, msTimer=null;
+// группа карточек приёмки: у штрихкода бывают карточки и в «Одежда NEW», и у Ламоды — принимают отдельными приёмками
+const grpName=g=>T(g==='lamoda'?'grp_lamoda':'grp_new');
+const isLamodaSupply=s=>/ламод|lamoda/i.test(s.description||'');
+// какая группа стояла у каждой приёмки на этом планшете: вернулись к приёмке — та же группа
+const grpMemo=()=>{ try{ return JSON.parse(LS.get('km_supply_groups')||'{}')||{}; }catch(e){ return {}; } };
+function grpRemember(id,g){ const m=grpMemo(); m[id]=g; const keys=Object.keys(m); if(keys.length>50) delete m[keys[0]]; LS.set('km_supply_groups',JSON.stringify(m)); }
 
 async function api(method,path,body){
   const c=msCfg();
@@ -786,12 +801,14 @@ function setSupply(s){
 function renderSupply(codes=lastCodes){
   const el=$('#supply');
   if(!msOn()){ el.hidden=true; return; }
-  el.hidden=false; el.className='supply'+(supply?' on':'');
+  const g=supply&&supply.group==='lamoda'?'lamoda':'new';
+  el.hidden=false; el.className='supply'+(supply?' on':'')+(supply&&g==='lamoda'?' lam':'');
   let h;
   if(supply){
     const n=codes.filter(c=>c.ms_supply===supply.id&&c.ms==='sent').length;
     h=`<div class="what">${T('sup_active')(esc(supply.name),esc(supply.org),esc(supply.agent),n)}</div>
-      <button class="small" data-act="pick">${esc(T('sup_change'))}</button><button class="small" data-act="close">${esc(T('sup_close'))}</button>`;
+      <button class="small" data-act="pick">${esc(T('sup_change'))}</button><button class="small" data-act="close">${esc(T('sup_close'))}</button>
+      <div class="grp">${esc(T('sup_grp'))}${['new','lamoda'].map(x=>`<button class="small${x===g?' on':''}" data-act="grp" data-g="${x}" aria-pressed="${x===g}">${esc(grpName(x))}</button>`).join('')}</div>`;
   } else h=`<div class="what">${esc(T('sup_none'))}</div>
       <button class="small primary" data-act="pick">${esc(T('sup_pick'))}</button><button class="small" data-act="new">${esc(T('sup_new'))}</button>`;
   const pend=codes.filter(c=>c.ms==='pending').length, ch=codes.filter(c=>c.ms==='choose').length,
@@ -801,9 +818,16 @@ function renderSupply(codes=lastCodes){
   el.innerHTML=h;
 }
 $('#supply').addEventListener('click',e=>{
-  const act=e.target.closest('[data-act]')?.dataset.act;
+  const b=e.target.closest('[data-act]'), act=b?.dataset.act;
   if(act==='pick') openPick(); else if(act==='new') openNew(); else if(act==='close') closeSupply(); else if(act==='send') resendAll();
+  else if(act==='grp') setGroup(b.dataset.g);
 });
+// переключатель «Карточки»: в какую группу товаров «МойСклад» идут следующие сканы этой приёмки
+function setGroup(g){
+  if(!supply||(supply.group||'new')===g) return;
+  supply={...supply,group:g==='lamoda'?'lamoda':'new'}; LS.set('km_supply',JSON.stringify(supply)); grpRemember(supply.id,supply.group);
+  renderSupply(); scanEl.focus();
+}
 function closeSupply(){
   if(!supply) return;
   const pend=lastCodes.filter(c=>c.ms==='pending'&&c.ms_supply===supply.id).length;
@@ -823,7 +847,7 @@ function dlgClose(){ if(dlg.open) dlg.close(); }
 dlg.addEventListener('close',()=>setTimeout(()=>scanEl.focus(),50));
 async function msStatus(){
   const r=await api('GET','status');
-  if(r.ok){ msShops=r.data.shops; msStore=r.data.store; }
+  if(r.ok){ msShops=r.data.shops; msStore=r.data.store; msDefaultAgent=r.data.defaultAgent||null; }
   return r;
 }
 async function openPick(){
@@ -840,7 +864,10 @@ async function openPick(){
       <small>${esc(s.agent)} · ${esc(s.store)} · ${s.positions} ${esc(T('sup_positions'))}${s.scanned?` · ${esc(T('sup_scanned'))} ${s.scanned}`:''}${s.description?` · ${esc(s.description)}`:''}</small></button>`).join('')
       :`<p class="help">${esc(T('sup_empty'))}</p>`);
   box.querySelectorAll('button.pick').forEach(b=>b.onclick=()=>{
-    const s=list[+b.dataset.k]; setSupply({id:s.id,name:s.name,account:s.account,org:org(s.account),agent:s.agent}); dlgClose();
+    const s=list[+b.dataset.k];
+    // группа: какая стояла у этой приёмки на планшете; иначе приёмка Ламоды, созданная сканером, — «Ламода»; иначе «Одежда NEW»
+    const group=(supply&&supply.id===s.id?supply.group:grpMemo()[s.id])||(isLamodaSupply(s)?'lamoda':'new');
+    setSupply({id:s.id,name:s.name,account:s.account,org:org(s.account),agent:s.agent,group}); dlgClose();
   });
 }
 async function openNew(){
@@ -848,11 +875,12 @@ async function openNew(){
   const requestId=newId();                       // повтор после обрыва найдёт ту же приёмку, а не создаст вторую
   dlgOpen(`<h2>${esc(T('new_h'))}</h2>
     <label for="nOrg">${esc(T('new_org'))}</label><select id="nOrg">${msShops.map(s=>`<option value="${esc(s.account)}">${esc(s.organization)}</option>`).join('')}</select>
-    <label for="nAgentQ">${esc(T('new_agent'))}</label><input type="text" id="nAgentQ" placeholder="${esc(T('new_agent_ph'))}" autocomplete="off"><div id="nAgents"></div>
+    <label for="nGrp">${esc(T('new_grp'))}</label><select id="nGrp">${['new','lamoda'].map(x=>`<option value="${x}">${esc(grpName(x))}</option>`).join('')}</select>
+    <label for="nAgentQ">${esc(T('new_agent'))}</label><input type="text" id="nAgentQ" placeholder="${esc(T('new_agent_ph'))}" autocomplete="off" value="${esc(msDefaultAgent?msDefaultAgent.name:'')}"><div id="nAgents"></div>
     <label for="nComment">${esc(T('new_comment'))}</label><input type="text" id="nComment" placeholder="${esc(T('new_comment_ph'))}" autocomplete="off">
     <p class="help">${esc(T('new_store')(msStore))}</p><div class="msg err" id="nMsg"></div>
     <div class="row" style="margin-top:12px"><button class="primary" id="nCreate">${esc(T('new_create'))}</button><button data-act="x" style="margin-left:auto">${esc(T('cancel'))}</button></div>`);
-  let agent=null, qt=null;
+  let agent=msDefaultAgent, qt=null;            // поставщик по умолчанию (сейчас все машины от него); можно сменить поиском
   $('#nAgentQ').addEventListener('input',()=>{
     agent=null; clearTimeout(qt);
     qt=setTimeout(async()=>{
@@ -867,12 +895,15 @@ async function openNew(){
   });
   $('#nCreate').onclick=async()=>{
     if(!agent){ $('#nMsg').textContent=T('new_need_agent'); return; }
-    const account=$('#nOrg').value, btn=$('#nCreate'); btn.disabled=true; $('#nMsg').textContent='';
-    const r=await api('POST','supplies',{account,agentId:agent.id,comment:$('#nComment').value,requestId});
+    const account=$('#nOrg').value, group=$('#nGrp').value==='lamoda'?'lamoda':'new', btn=$('#nCreate'); btn.disabled=true; $('#nMsg').textContent='';
+    // «Ламода» в комментарии документа: по ней приёмка при выборе из списка сама встанет на карточки Ламоды
+    const note=$('#nComment').value.trim(), comment=group==='lamoda'?`Ламода${note?` · ${note}`:''}`:note;
+    const r=await api('POST','supplies',{account,agentId:agent.id,comment,requestId});
     btn.disabled=false;
     if(!r.ok){ $('#nMsg').textContent=r.error; return; }
     const s=r.data.supply;
-    setSupply({id:s.id,name:s.name,account,org:shortOrg((msShops.find(x=>x.account===account)||{}).organization),agent:s.agent});
+    grpRemember(s.id,group);
+    setSupply({id:s.id,name:s.name,account,org:shortOrg((msShops.find(x=>x.account===account)||{}).organization),agent:s.agent,group});
     dlgClose();
   };
 }
@@ -893,7 +924,7 @@ async function msPump(){
       const row=(await allCodes()).filter(c=>c.ms==='pending').sort((a,b)=>String(a.used_at).localeCompare(String(b.used_at)))[0];
       if(!row) break;
       msSendingId=row.id; msLine('',esc(T('ms_sending')));
-      const r=await api('POST','scan',{supplyId:row.ms_supply,gtin:row.gtin,serial:row.serial,...(row.ms_choose?{choose:row.ms_choose}:{})});
+      const r=await api('POST','scan',{supplyId:row.ms_supply,gtin:row.gtin,serial:row.serial,group:row.ms_group||'new',...(row.ms_choose?{choose:row.ms_choose}:{})});
       msSendingId=null;
       if(!r.ok&&msRetryable(r.status)){
         msLine('err',esc(r.status===409?T('ms_wait_off'):r.status===401?T('ms_wait_auth'):T('ms_wait')(r.error))); msSchedule(15000); break;
@@ -903,7 +934,7 @@ async function msPump(){
     }
     // код ждёт выбора карточки — вопрос остаётся на экране, даже если за ним отправлялись другие
     const ch=(await allCodes()).find(c=>c.ms==='choose');
-    if(ch) showChoose(ch.gtin,ch.ms_options||[]);
+    if(ch) showChoose(ch.gtin,ch.ms_options||[],ch.ms_group||'new');
   }finally{ msPumping=false; msSendingId=null; }
 }
 // ответ сервера → поля кода и строка под статусом скана
@@ -914,33 +945,39 @@ function msResult(row,r){
   if(d.status==='already'){ msLine('ok',esc(T('ms_already')(d.supply))); return {ms:'sent',ms_err:null}; }
   if(d.status==='elsewhere'){ msLine('err',esc(T('ms_elsewhere')(d.supply))); beep('repeat'); return {ms:'elsewhere',ms_err:d.supply}; }
   if(d.status==='choose'){ beep('warn'); return {ms:'choose',ms_options:d.options||[]}; }
-  if(d.status==='not_found'){ msLine('warn',esc(T('ms_notfound')(row.gtin))); beep('warn'); return {ms:'notfound',ms_err:null}; }
+  if(d.status==='not_found'){
+    const text=d.folder?T('ms_notfound_g')(row.gtin,d.folder,(d.other||[]).join('», «')):T('ms_notfound')(row.gtin);
+    msLine('warn',esc(text)); beep('warn'); return {ms:'notfound',ms_err:d.other&&d.other.length?d.other.join(', '):null};
+  }
   msLine('err',esc(T('ms_error')(JSON.stringify(d).slice(0,120)))); return {ms:'error',ms_err:'?'};
 }
 // у штрихкода несколько карточек: выбор — кнопками прямо под статусом, скан не блокируется
-function showChoose(gtin,options){
-  msLine('warn',`${esc(T('ms_choose'))} <span class="help">GTIN ${esc(gtin)}</span><div class="row">`
+function showChoose(gtin,options,group='new'){
+  msLine('warn',`${esc(T('ms_choose'))} <span class="help">GTIN ${esc(gtin)} · ${esc(grpName(group))}</span><div class="row">`
     +options.map((o,k)=>`<button class="small" data-k="${k}">${esc(o.name)}${o.article?` · ${esc(o.article)}`:''}</button>`).join('')+'</div>');
   $('#msline').querySelectorAll('button').forEach(b=>b.onclick=async()=>{
     const href=options[+b.dataset.k].href;
-    // этот выбор — для всех кодов с тем же GTIN, что ждут выбора
-    for(const c of (await allCodes()).filter(c=>c.ms==='choose'&&c.gtin===gtin)) await patchCode(c.id,{ms:'pending',ms_choose:href,ms_options:null});
+    // этот выбор — для всех кодов с тем же GTIN и той же группой, что ждут выбора
+    for(const c of (await allCodes()).filter(c=>c.ms==='choose'&&c.gtin===gtin&&(c.ms_group||'new')===group)) await patchCode(c.id,{ms:'pending',ms_choose:href,ms_options:null});
     msLine('','');
     await refreshAll(); msPump();
   });
 }
-async function resend(id){ await patchCode(id,{ms:'pending',ms_err:null}); await refreshAll(); msPump(); }
+// повтор: «нет товара» в этой приёмке уходит в группе, что выбрана сейчас (отсканировали не в той — переключили и отправили)
+const resendPatch=c=>({ms:'pending',ms_err:null,...(c&&c.ms==='notfound'&&supply&&c.ms_supply===supply.id?{ms_group:supply.group||'new'}:{})});
+async function resend(id){ await patchCode(id,resendPatch(lastCodes.find(c=>c.id===id))); await refreshAll(); msPump(); }
 async function resendAll(){
-  for(const c of lastCodes.filter(c=>c.ms==='error'||c.ms==='notfound')) await patchCode(c.id,{ms:'pending',ms_err:null});
-  const ch=lastCodes.find(c=>c.ms==='choose'); if(ch) showChoose(ch.gtin,ch.ms_options||[]);
+  for(const c of lastCodes.filter(c=>c.ms==='error'||c.ms==='notfound')) await patchCode(c.id,resendPatch(c));
+  const ch=lastCodes.find(c=>c.ms==='choose'); if(ch) showChoose(ch.gtin,ch.ms_options||[],ch.ms_group||'new');
   await refreshAll(); msPump();
 }
 function msCell(c){
   if(!c.ms) return '';
   const k={pending:'ms-pending',sent:'ms-sent',error:'ms-err',elsewhere:'ms-err',notfound:'ms-warn',choose:'ms-warn'}[c.ms]||'ms-warn';
-  const title=[c.ms_supply_name?`${T('sup_word')} ${c.ms_supply_name}`:'',c.ms_product||'',c.ms_err||''].filter(Boolean).join(' · ');
+  const title=[c.ms_supply_name?`${T('sup_word')} ${c.ms_supply_name}`:'',c.ms_group?grpName(c.ms_group):'',c.ms_product||'',c.ms_err||''].filter(Boolean).join(' · ');
   const again=['error','notfound','choose'].includes(c.ms)?` <button class="small" onclick="resend(${c.id})">${esc(T('resend'))}</button>`:'';
-  return `<span class="pill ${k}" title="${esc(title)}">${esc(T('msst_'+c.ms))}</span>${again}`;
+  const lam=c.ms_group==='lamoda'?` <small>${esc(grpName('lamoda'))}</small>`:'';
+  return `<span class="pill ${k}" title="${esc(title)}">${esc(T('msst_'+c.ms))}</span>${lam}${again}`;
 }
 
 // ---- настройка связи (вкладка «Файлы»)
