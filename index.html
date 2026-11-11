@@ -147,8 +147,8 @@
   <section>
     <h2 data-i="ms_h">МойСклад: приёмка</h2>
     <p class="help" data-i="ms_help">Сканер может сам складывать принятые коды в приёмку «МойСклад». Адрес сервера и токен даёт Роман, они хранятся только на этом планшете.</p>
-    <label for="msUrl" data-i="ms_url">Адрес сервера</label>
-    <input type="text" id="msUrl" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label for="msUrl" data-i="ms_url" class="ms-url">Адрес сервера</label>
+    <input type="text" id="msUrl" class="ms-url" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false">
     <label for="msToken" data-i="ms_token">Токен сканера</label>
     <input type="password" id="msToken" autocomplete="off">
     <div class="row" style="margin-top:12px">
@@ -793,7 +793,9 @@ $('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx
 const LS={ get:k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } },
            set:(k,v)=>{ try{ v==null?localStorage.removeItem(k):localStorage.setItem(k,v); }catch(e){} } };
 const MS_CLEAR={ms:null,ms_supply:null,ms_supply_name:null,ms_group:null,ms_err:null,ms_choose:null,ms_options:null,ms_qty:null,ms_product:null};
-const msCfg=()=>({url:LS.get('km_ms_url')||'', token:LS.get('km_ms_token')||''});
+// Сканер открыт с сервера ATV Picker (/km/) — сервер тот же, адрес не нужен. На старом адресе (GitHub Pages) — из настройки.
+const HOSTED=/^\/km\//.test(location.pathname)&&/^https?:$/.test(location.protocol);
+const msCfg=()=>({url:HOSTED?location.origin:(LS.get('km_ms_url')||''), token:LS.get('km_ms_token')||''});
 const msOn=()=>{ const c=msCfg(); return !!(c.url&&c.token); };
 let supply=null; try{ supply=JSON.parse(LS.get('km_supply')||'null'); }catch(e){}
 // после перезагрузки поле «Отгрузка / документ» пустое — подставим номер активной приёмки
@@ -1013,24 +1015,28 @@ function msCell(c){
 }
 
 // ---- настройка связи (вкладка «Файлы»)
-// Одной ссылкой: …/km-scanner/#ms=<адрес сервера>&t=<токен>. Сохраняем в планшет и сразу стираем из адресной строки.
-// Сервер называем человеку и спрашиваем: чужая ссылка не должна молча увести коды на посторонний сервер.
+// Одной ссылкой: <сервер>/km/#t=<токен> (старый адрес: …/km-scanner/#ms=<адрес сервера>&t=<токен>).
+// Сохраняем в планшет и сразу стираем из адресной строки. На старом адресе сервер называем человеку и спрашиваем:
+// чужая ссылка не должна молча увести коды на посторонний сервер. С /km/ токен уходит тому же серверу — не спрашиваем.
 let msSetup=null;
 (function(){
-  const h=new URLSearchParams(location.hash.slice(1)), u=(h.get('ms')||'').trim().replace(/\/+$/,''), t=(h.get('t')||'').trim();
-  if(!u&&!t) return;
+  const h=new URLSearchParams(location.hash.slice(1));
+  const u=HOSTED?location.origin:(h.get('ms')||'').trim().replace(/\/+$/,''), t=(h.get('t')||'').trim();
+  if(!h.has('ms')&&!t) return;
   history.replaceState(null,'',location.pathname+location.search);
   const okUrl=/^https:\/\/[^\s/?#]+$/i.test(u)||/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(u);
   if(!okUrl||!/^[A-Za-z0-9_-]{20,200}$/.test(t)){ msSetup='bad'; return; }
-  if(!confirm(T('setup_q')(u))) return;
-  LS.set('km_ms_url',u); LS.set('km_ms_token',t); msSetup='ok';
+  if(!HOSTED&&!confirm(T('setup_q')(u))) return;
+  if(!HOSTED) LS.set('km_ms_url',u);
+  LS.set('km_ms_token',t); msSetup='ok';
 })();
+if(HOSTED) document.querySelectorAll('.ms-url').forEach(el=>{ el.style.display='none'; });
 $('#msUrl').value=msCfg().url; $('#msToken').value=msCfg().token;
 $('#msSave').onclick=async()=>{
-  let url=$('#msUrl').value.trim().replace(/\/+$/,''); const m=$('#msMsg');
+  let url=HOSTED?location.origin:$('#msUrl').value.trim().replace(/\/+$/,''); const m=$('#msMsg');
   if(url&&!/^https?:\/\//i.test(url)) url='https://'+url;
   if(url&&!/^https:\/\//i.test(url)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url)){ m.className='msg err'; m.textContent=T('ms_bad_url'); return; }
-  $('#msUrl').value=url; LS.set('km_ms_url',url||null); LS.set('km_ms_token',$('#msToken').value.trim()||null);
+  $('#msUrl').value=url; if(!HOSTED) LS.set('km_ms_url',url||null); LS.set('km_ms_token',$('#msToken').value.trim()||null);
   if(!msOn()){ m.className='msg'; m.textContent=T('ms_off'); renderSupply(); return; }
   m.className='msg'; m.textContent=T('ms_checking');
   const r=await msStatus();
