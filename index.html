@@ -277,7 +277,7 @@ const I18N = {
     f_all:'Все', f_free:'Свободные', f_used:'Использованные', q_ph:'поиск: серийник, товар, размер, отгрузка',
     stats:(t,f,u)=>`Кодов в базе <b>${t}</b> · свободных <b>${f}</b> · использованных <b>${u}</b>`,
     st_ok:'Принято', st_repeat:'ПОВТОР — код уже использован', st_unknown:'Кода нет в базе — этот PDF не загружали', st_bad:'Не похоже на код маркировки',
-    st_again:'Уже принят только что', st_ean:'Это штрих-код товара, а не код маркировки', ean_hint:'Наведи сканер на квадратный код',
+    st_again:'Уже принят только что', st_ean:'Это штрих-код товара, а не код маркировки', ean_hint:'Наведи сканер на квадратный код', recovered:'начало кода не дошло от сканера — найден по базе',
     chars:'симв.', keys_l:'клавиши', layout_note:'раскладка RU → EN',
     used_at:'Использован', page:'стр.', got:'Получено',
     parsing:n=>`Разбираю ${n}…`, up_done:(n,p,a)=>`${n}: страниц ${p}, добавлено кодов ${a}.`, up_dup:l=>` Уже были в базе (пропущены): стр. ${l}.`, up_unread:l=>` Не удалось прочитать код: стр. ${l}.`, up_none:'Новых кодов нет — файл не сохранён.',
@@ -327,7 +327,7 @@ const I18N = {
     f_all:'全部', f_free:'未使用', f_used:'已使用', q_ph:'搜索：序列号、商品、尺码、单据',
     stats:(t,f,u)=>`数据库编码 <b>${t}</b> · 未使用 <b>${f}</b> · 已使用 <b>${u}</b>`,
     st_ok:'已接受', st_repeat:'重复 — 此编码已使用', st_unknown:'数据库中无此编码 — 未上传对应 PDF', st_bad:'不是有效的标识码',
-    st_again:'刚刚已接受', st_ean:'这是商品条码，不是标识码', ean_hint:'请对准方形码',
+    st_again:'刚刚已接受', st_ean:'这是商品条码，不是标识码', ean_hint:'请对准方形码', recovered:'扫描器丢失了编码开头 — 已按数据库找到',
     chars:'字符', keys_l:'按键', layout_note:'键盘布局 RU → EN',
     used_at:'已使用于', page:'第', got:'收到',
     parsing:n=>`正在解析 ${n}…`, up_done:(n,p,a)=>`${n}：共 ${p} 页，新增编码 ${a} 个。`, up_dup:l=>` 已存在（跳过）：第 ${l} 页。`, up_unread:l=>` 无法读取编码：第 ${l} 页。`, up_none:'没有新编码 — 文件未保存。',
@@ -436,6 +436,15 @@ async function findAny(p){
   for(const serial of p.candidates){ const row=await findCode(p.gtin,serial); if(row) return row; }
   return null;
 }
+// Bluetooth-сканер после простоя теряет первые символы: приходит код без «01+GTIN».
+// Пришедший кусок — подстрока полного кода из PDF; подпись 92… уникальна, поэтому ищем по full_code.
+// Принимаем, только если совпадение ровно одно.
+async function findByFragment(raw){
+  const frag=fixLayout((raw||'').trim()).replace(/^\](d2|Q3|C1|e0)/,'').replace(/[\x1d\r\n\t]/g,'');
+  if(frag.length<20) return null;
+  const hits=(await allCodes()).filter(c=>c.full_code&&c.full_code.includes(frag));
+  return hits.length===1?hits[0]:null;
+}
 // Строка скана для диагностики: невидимые символы метками ⟨GS⟩, ⟨TAB⟩, ⟨0x1E⟩, в конце длина.
 const CTRL_NAMES={'\x1d':'GS','\t':'TAB','\r':'CR','\n':'LF'};
 const showRaw=s=>[...s.slice(0,160)].map(c=>c>=' '&&c!=='\x7f'?c:`⟨${CTRL_NAMES[c]||'0x'+c.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0')}⟩`).join('')+(s.length>160?'…':'')+` (${s.length} ${T('chars')})`;
@@ -538,10 +547,12 @@ let lastOk=null;
 async function handleScan(raw,keys=[]){
   const docName=$('#doc').value.trim();
   const p=parseKM(raw);
-  let d;
-  if(!p) d=/^(\d{8}|\d{12,14})$/.test(raw.trim())?{status:'bad', message:T('st_ean'), hint:T('ean_hint')}:{status:'bad', message:T('st_bad')};
+  const isEan=/^(\d{8}|\d{12,14})$/.test(raw.trim());
+  let d, row=null, recovered=false;
+  if(p) row=await findAny(p);
+  else if(!isEan && (row=await findByFragment(raw))){ recovered=true; lastParsedAt=Date.now(); }
+  if(!p&&!row) d=isEan?{status:'bad', message:T('st_ean'), hint:T('ean_hint')}:{status:'bad', message:T('st_bad')};
   else {
-    const row=await findAny(p);
     if(!row) d={status:'unknown', message:T('st_unknown'), ...p};
     else {
       const files=await allFiles(); const fn=(files.find(f=>f.id===row.file_id)||{}).name||'';
@@ -568,7 +579,8 @@ async function handleScan(raw,keys=[]){
   if(d.hint) sub=d.hint;
   // что именно прислал сканер — для статусов, когда код не принят
   let diag='';
-  if(d.status==='bad'||d.status==='unknown'){
+  if(recovered) diag=`${T('recovered')} · ${T('got')}: ${showRaw(raw)}`;
+  else if(d.status==='bad'||d.status==='unknown'){
     diag=`${T('got')}: ${showRaw(raw)}`;
     if(p&&p.ru) diag+=` · ${T('layout_note')}`;
     if(keys.length) diag+=` · ${T('keys_l')}: ${keys.join(', ')}`;
@@ -577,7 +589,7 @@ async function handleScan(raw,keys=[]){
     +(['bad','unknown','repeat'].includes(d.status)?`<a class="sub help-what" href="scanner-help.html">${esc(T('help_what'))}</a>`:'');
   beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
   const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
-  $('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')}${d.serial?' · '+esc(d.serial):''} · ${esc(d.message)}${diag?' · '+esc(diag):''}</div>`);
+  addHist(cls,`${d.serial?esc(d.serial)+' · ':''}${esc(d.message)}${diag?' · '+esc(diag):''}`);
   // строка «МойСклад» под статусом — про прошлый код; у непринятого кода её не оставляем (кроме вопроса о карточке)
   if(d.status!=='ok'&&d.status!=='again'&&!$('#msline button')) msLine('','');
   await refreshAll();
@@ -597,7 +609,23 @@ let buf='', holdTimer=null, pauseTimer=null, lastParsedAt=0, chain=Promise.resol
 let altDigits='', scanKeys=[];
 const looksComplete=s=>/9[13].{4}[\s\S]{0,5}92.{44}/.test(s) || /93.{4}$/.test(s);   // полный КМ (лёгпром) или короткий с 93
 const isTail=s=>/^[\x1d\]]?(91|92|93)/.test(s.replace(/^\](d2|Q3|C1|e0)/,''));
-const histLine=(cls,txt)=>$('#hist').insertAdjacentHTML('afterbegin',`<div class="${cls}">${new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'ru')} · ${txt}</div>`);
+// Журнал сканов хранится в localStorage: Android выгружает свёрнутую вкладку, и после возврата
+// страница перезагружается. txt — уже экранированный HTML; время дописывается при показе.
+const HIST_KEY='km_hist', HIST_MAX=100;
+const histLoad=()=>{ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||'[]')||[]; }catch(e){ return []; } };
+function histRow(h){
+  const d=new Date(h.ts), loc=LANG==='zh'?'zh-CN':'ru';
+  const when=(d.toDateString()===new Date().toDateString()?'':d.toLocaleDateString(loc)+' ')+d.toLocaleTimeString(loc);
+  return `<div class="${h.cls}">${when} · ${h.txt}</div>`;
+}
+function addHist(cls,txt){
+  const h={cls,txt,ts:Date.now()};
+  $('#hist').insertAdjacentHTML('afterbegin',histRow(h));
+  const all=histLoad(); all.push(h);
+  try{ localStorage.setItem(HIST_KEY,JSON.stringify(all.slice(-HIST_MAX))); }catch(e){}
+}
+function renderHist(){ $('#hist').innerHTML=histLoad().reverse().map(histRow).join(''); }
+const histLine=addHist;
 const noteKey=k=>{ if(scanKeys.length<20) scanKeys.push(k); };
 function takeField(){ const v=scanEl.value; scanEl.value=''; return v.replace(/[\r\n\t]/g,''); }
 function armPause(){ clearTimeout(pauseTimer); pauseTimer=setTimeout(()=>onChunk(takeField()),500); }
@@ -756,7 +784,7 @@ $('#restore').addEventListener('change',async()=>{
   for(const c of data.codes) t.objectStore('codes').put(c);
   await txDone(t); alert(T('restored')); refreshAll();
 });
-$('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear(); await txDone(t); refreshAll(); };
+$('#wipe').onclick=async()=>{ if(!confirm(T('confirm_wipe'))) return; const t=tx(['files','codes'],'readwrite'); t.objectStore('files').clear(); t.objectStore('codes').clear(); await txDone(t); try{ localStorage.removeItem(HIST_KEY); }catch(e){} renderHist(); refreshAll(); };
 
 // ============================================================ «МойСклад»: приёмка
 // Принятый код уходит на сервер atv-picker (/api/receiving), тот делает +1 в проведённой приёмке «МойСклад».
@@ -1024,7 +1052,7 @@ function showView(v){ document.querySelectorAll('.view').forEach(x=>x.classList.
 document.querySelectorAll('nav.tabs-main button').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
 openDB().then(async()=>{
-  applyLang(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll();
+  applyLang(); renderHist(); if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); await refreshAll();
   if(msSetup==='bad') msLine('err',esc(T('setup_bad')));
   if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
   msPump();
