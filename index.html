@@ -91,6 +91,13 @@
   .supply.lam .grp button.on{background:#7b3fb0;border-color:#7b3fb0}
   .supply .what{flex:1;min-width:220px}
   .supply .more{flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:13px}
+  .czline{margin-top:10px;padding:12px 14px;border-radius:10px;border:2px solid transparent;font-size:24px;font-weight:800;line-height:1.25}
+  .czline:empty{display:none}
+  .czline.ok{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+  .czline.err{background:var(--bad-bg);border-color:var(--bad);color:var(--bad);font-size:30px}
+  .czline.warn{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+  .czline.idle{background:transparent;border-color:var(--line,#ddd);color:var(--muted);font-size:18px;font-weight:600}
+  .czline .s{display:block;font-size:15px;font-weight:600;opacity:.85;margin-top:2px}
   .msline{margin-top:10px;font-size:15px;color:var(--muted);min-height:1.4em}
   .msline.ok{color:var(--ok)} .msline.err{color:var(--bad);font-weight:600} .msline.warn{color:var(--warn);font-weight:600}
   .msline .row{margin-top:6px}
@@ -127,6 +134,7 @@
     <label for="scan" data-i="scan_label">Наведи сканер на код и нажми курок</label>
     <form id="scanform" autocomplete="off" action="#"><input type="text" id="scan" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-ph="scan_ph" placeholder="здесь появится код…" autofocus></form>
     <div class="status" id="status"><div class="sub" data-i="scan_hint">Сканируй — курсор встанет в поле сам. Сканер сам нажмёт Enter.</div></div>
+    <div class="czline" id="czline"></div>
     <div class="msline" id="msline"></div>
     <div class="hist" id="hist"></div>
   </section>
@@ -530,6 +538,7 @@ async function uploadFiles(list){
     prog.hidden=true;
   }
   $('#fab').classList.remove('busy');
+  czPush();
   refreshAll();
 }
 
@@ -593,6 +602,7 @@ async function handleScan(raw,keys=[]){
   st.innerHTML=`<div class="big">${esc(d.message)}</div><div class="sub">${esc(sub)}</div>`+(diag?`<div class="sub raw">${esc(diag)}</div>`:'')
     +(['bad','unknown','repeat'].includes(d.status)?`<a class="sub help-what" href="scanner-help.html">${esc(T('help_what'))}</a>`:'');
   beep(d.status==='ok'?'ok':d.status==='again'?'again':d.status==='repeat'?'repeat':'warn');
+  czShow(row&&['ok','again','repeat'].includes(d.status)?row:null, d.status==='unknown'?p:null, d.status==='ok');
   const cls=d.status==='ok'?'o':d.status==='repeat'?'r':d.status==='again'?'t':'u';
   addHist(cls,`${d.serial?esc(d.serial)+' · ':''}${esc(d.message)}${diag?' · '+esc(diag):''}`);
   logScan(d,raw,keys,isEan,recovered,row);
@@ -1192,6 +1202,75 @@ $('#msForget').onclick=()=>{ setTimeout(renderMoved,0); LS.set('km_ms_token',nul
 window.addEventListener('online',()=>msPump());
 setInterval(()=>{ if(lastCodes.some(c=>c.ms==='pending')) msPump(); },30000);
 
+// ============================================================ «Честный знак»: введён ли код в оборот
+// Коды загруженных PDF уходят на сервер (cz/codes). Василий на странице «Проверка ЧЗ» в ATV Picker подписывает вход
+// своей ЭЦП, сервер проверяет коды партии в «Честном знаке», а планшет забирает ответы (cz/status) в поля кода
+// cz, cz_text, cz_owner, cz_err. При скане ответ уже на планшете — строка под статусом: зелёная, красная или
+// оранжевая (код другого ИП). Скан и приёмка от этого не зависят: код принимается как раньше.
+const CZ_ACC={yurchenko:['ИП Юрченко','Yurchenko 个体户'],golovin:['ИП Головин','Golovin 个体户']};
+const czAcc=a=>{ const x=CZ_ACC[a]; return x?L2(x[0],x[1]):String(a||''); };
+let czSince=0, czReady=false, czPushing=false, czPushTimer=null;
+async function czPush(){
+  if(czPushing||!msOn()) return;
+  czPushing=true; clearTimeout(czPushTimer);
+  try{
+    for(;;){
+      const rows=(await allCodes()).filter(c=>!c.cz_sent).slice(0,800);
+      if(!rows.length) break;
+      const r=await api('POST','cz/codes',{codes:rows.map(c=>({gtin:c.gtin,serial:c.serial}))});
+      if(!r.ok){ czPushTimer=setTimeout(czPush,30000); break; }
+      const t=tx('codes','readwrite'), st=t.objectStore('codes');
+      for(const c of rows){ const x=await req(st.get(c.id)); if(x){ x.cz_sent=1; st.put(x); } }
+      await txDone(t);
+    }
+  }finally{ czPushing=false; }
+}
+async function czPull(){
+  if(!msOn()) return;
+  const r=await api('GET',`cz/status?since=${czSince}`);
+  if(!r.ok) return;
+  const list=r.data.codes||[];
+  if(list.length){
+    const t=tx('codes','readwrite'), st=t.objectStore('codes'), ix=st.index('key');
+    for(const c of list){
+      const x=await req(ix.get([c.gtin,c.serial]));
+      if(x){ Object.assign(x,{cz:c.status||null,cz_text:c.statusText||null,cz_owner:c.owner||null,cz_err:c.error||null,cz_sent:1}); st.put(x); }
+    }
+    await txDone(t);
+  }
+  czSince=r.data.now||czSince;
+  czReady=czReady||!!r.data.lastRun||list.some(c=>c.status);
+}
+/** Вердикт по коду: класс строки, главный текст, пояснение. */
+function czVerdict(row){
+  const acc=supply&&supply.account, own=row.cz_owner;
+  const foreign=!!(own&&acc&&own!==acc);
+  const fs=foreign?L2(`Код ${czAcc(own)}, а приёмка ${czAcc(acc)}`,`代码属于 ${czAcc(own)}，入库单是 ${czAcc(acc)}`):'';
+  if(row.cz==='INTRODUCED') return foreign?{cls:'warn',big:L2('ЧУЖОЙ ИП','其他个体户'),sub:fs+L2(' · в обороте',' · 已流通')}:{cls:'ok',big:L2('ЧЗ: в обороте ✓','ЧЗ：已流通 ✓'),sub:''};
+  if(row.cz) return {cls:'err',big:L2('НЕ В ОБОРОТЕ','未流通'),sub:L2(`«Честный знак»: ${row.cz_text||row.cz}`,`ЧЗ：${row.cz}`)+(fs?' · '+fs:'')};
+  if(row.cz_err) return {cls:'warn',big:L2('ЧЗ: не удалось проверить','ЧЗ：无法检查'),sub:row.cz_err+(fs?' · '+fs:'')};
+  if(foreign) return {cls:'warn',big:L2('ЧУЖОЙ ИП','其他个体户'),sub:fs+L2(' · ЧЗ ещё не проверен',' · ЧЗ 尚未检查')};
+  return {cls:'idle',big:L2('ЧЗ: ещё не проверен','ЧЗ：尚未检查'),sub:L2('Проверится, когда Василий нажмёт «Проверить партию»','Vasily 点击检查后显示')};
+}
+async function czShow(row,unknown,loud){
+  const el=$('#czline');
+  if(unknown&&unknown.gtin&&unknown.serial&&msOn()) api('POST','cz/codes',{codes:[{gtin:unknown.gtin,serial:unknown.serial}]});
+  if(!row||!msOn()||(!czReady&&!row.cz&&!row.cz_owner)){ el.className='czline'; el.innerHTML=''; return; }
+  const v=czVerdict(row);
+  el.className='czline '+v.cls;
+  el.innerHTML=`${esc(v.big)}${v.sub?`<span class="s">${esc(v.sub)}</span>`:''}`;
+  if(loud&&(v.cls==='err'||v.cls==='warn')){
+    setTimeout(()=>beep('repeat'),350);
+    // журнал — всегда по-русски, как logScan
+    const acc=supply&&supply.account, own=row.cz_owner;
+    const ru=[row.cz&&row.cz!=='INTRODUCED'?`не в обороте (${row.cz_text||row.cz})`:row.cz_err?`не удалось проверить (${row.cz_err})`:'',
+      own&&acc&&own!==acc?`чужой ИП: код ${CZ_ACC[own]?CZ_ACC[own][0]:own}, приёмка ${CZ_ACC[acc]?CZ_ACC[acc][0]:acc}`:''].filter(Boolean).join(' · ');
+    kmLog('scan',v.cls==='err'?'error':'warn',`«Честный знак»: ${ru} · ${row.gtin} …${String(row.serial).slice(-6)}`);
+  }
+}
+window.addEventListener('online',()=>{ czPush(); czPull(); });
+setInterval(()=>{ czPull(); },30000);
+
 // ============================================================ загрузка файлов / навигация
 const drop=$('#drop'), fileInp=$('#file');
 
@@ -1209,7 +1288,7 @@ openDB().then(async()=>{
   if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
   renderMoved(); movedNote();
   if(msMove&&msSetup==='ok') await moveIn(msMove);
-  msPump(); logPump();
+  msPump(); logPump(); czPush().then(czPull);
 }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; kmLog('error','error','База планшета не открылась: '+e); });
 </script>
 </body>
