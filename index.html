@@ -296,7 +296,7 @@ const I18N = {
     chars:'симв.', keys_l:'клавиши', layout_note:'раскладка RU → EN',
     used_at:'Использован', page:'стр.', got:'Получено',
     parsing:n=>`Разбираю ${n}…`, up_done:(n,p,a)=>`${n}: страниц ${p}, добавлено кодов ${a}.`, up_dup:l=>` Уже были в базе (пропущены): стр. ${l}.`, up_unread:l=>` Не удалось прочитать код: стр. ${l}.`, up_none:'Новых кодов нет — файл не сохранён.',
-    parse_resume:(n,p)=>`Продолжаю разбор ${n} со страницы ${p}…`, parsing_s:'разбор…',
+    parse_resume:(n,p)=>`Продолжаю разбор ${n} со страницы ${p}…`, parsing_s:'разбор…', inbox_got:n=>`С ноутбука пришёл PDF ${n} — разбираю`,
     show:'показать', pdf_free:'PDF свободных', print:'печать', del:'удалить', nothing:'Пока ничего не загружено', none:'Ничего не найдено',
     of:'из', free_s:'свободен', used_s:'использован', mark:'отметить', unmark:'вернуть', manual:'вручную',
     confirm_del:n=>`Удалить файл «${n}» и все его коды из базы?`, confirm_wipe:'Удалить ВСЮ базу: все файлы и все коды? Это нельзя отменить.',
@@ -347,7 +347,7 @@ const I18N = {
     chars:'字符', keys_l:'按键', layout_note:'键盘布局 RU → EN',
     used_at:'已使用于', page:'第', got:'收到',
     parsing:n=>`正在解析 ${n}…`, up_done:(n,p,a)=>`${n}：共 ${p} 页，新增编码 ${a} 个。`, up_dup:l=>` 已存在（跳过）：第 ${l} 页。`, up_unread:l=>` 无法读取编码：第 ${l} 页。`, up_none:'没有新编码 — 文件未保存。',
-    parse_resume:(n,p)=>`继续解析 ${n}，从第 ${p} 页开始…`, parsing_s:'解析中…',
+    parse_resume:(n,p)=>`继续解析 ${n}，从第 ${p} 页开始…`, parsing_s:'解析中…', inbox_got:n=>`收到笔记本发来的 PDF ${n} — 正在解析`,
     show:'查看', pdf_free:'未使用 PDF', print:'打印', del:'删除', nothing:'尚未上传任何文件', none:'未找到',
     of:'/', free_s:'未使用', used_s:'已使用', mark:'标记', unmark:'恢复', manual:'手动',
     confirm_del:n=>`删除文件“${n}”及其全部编码？`, confirm_wipe:'删除整个数据库（所有文件和编码）？此操作无法撤销。',
@@ -536,12 +536,17 @@ async function uploadFiles(list){
 }
 /** PDF → сразу в базу (так он переживёт перезагрузку вкладки) → разбор в очереди. Возвращает итог разбора или null. */
 async function addPdf(name,bytes,extra){
+  const fileId=await storePdf(name,bytes,extra);
+  return fileId==null?null:parseQueue(()=>parseStored(fileId));
+}
+/** Только сохранить PDF в базу с отметкой «ещё не разобран». Возвращает id файла или null, если это не PDF. */
+async function storePdf(name,bytes,extra){
   if(!isPdf(bytes)){ const m=$('#upmsg'); m.className='msg err'; m.textContent=name+': '+T('not_pdf'); return null; }
   const t=tx('files','readwrite');
   const fileId=await req(t.objectStore('files').add({name, pages:null, uploaded_at:new Date().toISOString(), pdf:bytes, parsing:true, ...(extra||{})}));
   await txDone(t);
   refreshAll();
-  return parseQueue(()=>parseStored(fileId));
+  return fileId;
 }
 /** Файлы, разбор которых оборвался (вкладку выгрузили, перезагрузили), — дочитать с той же страницы. */
 async function resumeParsing(){
@@ -589,6 +594,7 @@ async function parseStored(fileId){
     if(pr.dup.length) m+=T('up_dup')(pr.dup.join(', '));
     if(pr.unread.length) m+=T('up_unread')(pr.unread.join(', '));
     msg.className='msg'+((pr.dup.length||pr.unread.length)?' err':''); msg.textContent=m;
+    if(f.inbox_id) inboxDone(f.inbox_id,{pages:N,added:pr.added,dup:pr.dup,unread:pr.unread});
     kmLog('info',pr.unread.length?'warn':'info',`PDF ${f.name}: страниц ${N}, новых кодов ${pr.added}${pr.dup.length?`, уже были: стр. ${pr.dup.join(', ')}`:''}${pr.unread.length?`, не прочитан код: стр. ${pr.unread.join(', ')}`:''}`);
     return {fileId:kept?fileId:null, name:f.name, pages:N, added:pr.added, dup:pr.dup, unread:pr.unread, inbox_id:f.inbox_id||null};
   }finally{
@@ -1360,6 +1366,43 @@ async function czShow(row,unknown,loud){
 window.addEventListener('online',()=>{ czPush(); czPull(); });
 setInterval(()=>{ czPull(); },30000);
 
+// ============================================================ PDF с ноутбука
+// Артём на ноутбуке (ATV Picker → «КМ-сканер») выбирает этот планшет по названию и отправляет PDF. Планшет раз в 30 с
+// спрашивает свои посылки (заодно сервер видит, что он на связи), сохраняет PDF к себе, отвечает «забрал» (taken) —
+// после этого файла на сервере нет — и разбирает его как загруженный руками; итог разбора уходит на ноутбук (done).
+let inboxBusy=false;
+async function inboxPull(){
+  if(inboxBusy||!msOn()) return;
+  inboxBusy=true;
+  try{
+    const q=new URLSearchParams({device:devId,name:devLabel(),model:devModel});
+    const r=await api('GET',`inbox?${q}`);
+    if(!r.ok) return;
+    for(const it of r.data.items||[]){
+      const path=`inbox/${encodeURIComponent(it.id)}`;
+      // «забрал» в прошлый раз не дошёл — файл уже у нас, только повторить ответ
+      if((await allFiles()).some(f=>f.inbox_id===it.id)){ await api('POST',`${path}/taken`,{deviceId:devId}); continue; }
+      let bytes;
+      try{
+        const c=msCfg();
+        const resp=await fetch(`${c.url}/api/receiving/${path}?device=${devId}`,{headers:{Authorization:'Bearer '+c.token},
+          signal:AbortSignal.timeout?AbortSignal.timeout(300000):undefined});
+        if(!resp.ok) continue;
+        bytes=new Uint8Array(await resp.arrayBuffer());
+      }catch(e){ continue; }
+      const fileId=await storePdf(it.name,bytes,{inbox_id:it.id,source:'laptop'});
+      if(fileId==null) continue;
+      kmLog('info','info',`PDF с ноутбука: ${it.name} — сохранён на планшете, разбираю`);
+      msLine('ok',esc(T('inbox_got')(it.name)));
+      await api('POST',`${path}/taken`,{deviceId:devId});
+      parseQueue(()=>parseStored(fileId));
+    }
+  }finally{ inboxBusy=false; }
+}
+function inboxDone(id,res){ api('POST',`inbox/${encodeURIComponent(id)}/done`,{deviceId:devId,...res}); }
+window.addEventListener('online',()=>inboxPull());
+setInterval(()=>{ inboxPull(); },30000);
+
 // ============================================================ загрузка файлов / навигация
 const drop=$('#drop'), fileInp=$('#file');
 
@@ -1378,7 +1421,7 @@ openDB().then(async()=>{
   renderMoved(); movedNote();
   if(msMove&&msSetup==='ok') await moveIn(msMove);
   resumeParsing();
-  msPump(); logPump(); czPush().then(czPull);
+  msPump(); logPump(); czPush().then(czPull); inboxPull();
 }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; kmLog('error','error','База планшета не открылась: '+e); });
 </script>
 </body>
