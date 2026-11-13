@@ -73,6 +73,8 @@
   .hist div{padding:3px 0;border-bottom:1px dotted var(--line)}
   .hist .r{color:var(--bad)} .hist .o{color:var(--ok)} .hist .u{color:var(--warn)} .hist .t{color:var(--muted);opacity:.7}
   header .ver{font-size:11px;color:var(--muted);margin-left:-10px}
+  header .devtitle{font-size:14px;font-weight:600;padding:2px 10px;border-radius:999px;background:var(--paper);border:1px solid var(--line)}
+  header .devtitle:empty{display:none}
   .help{font-size:13px;color:var(--muted)}
   @media(min-width:900px){ .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px} }
   .fab{position:fixed;overflow:hidden;cursor:pointer;right:18px;bottom:18px;z-index:20;display:flex;align-items:center;gap:10px;padding:0 22px 0 0;height:64px;border-radius:32px;background:var(--ink);color:#fff;border:0;box-shadow:0 6px 18px rgba(0,0,0,.25);font-size:17px;font-weight:600}
@@ -113,7 +115,7 @@
 </head>
 <body>
 <header>
-  <h1>КМ-сканер</h1><span class="ver">v3</span>
+  <h1>КМ-сканер</h1><span class="ver">v3</span><span class="devtitle" id="devTitle"></span>
   <div class="stats" id="stats"></div>
   <a class="help-link" href="scanner-help.html" data-i="help_link">Помощь</a>
   <div class="lang row"><button class="on" data-lang="ru">RU</button><button data-lang="zh">中文</button></div>
@@ -162,6 +164,8 @@
     <input type="text" id="msUrl" class="ms-url" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false">
     <label for="msToken" data-i="ms_token">Токен сканера</label>
     <input type="password" id="msToken" autocomplete="off">
+    <label for="devLabel" data-i="dev_label">Название планшета (видно на ноутбуке и в журнале)</label>
+    <input type="text" id="devLabel" maxlength="30" data-ph="dev_ph" placeholder="например: Ворота 1" autocomplete="off">
     <div class="row" style="margin-top:12px">
       <button class="primary" id="msSave" data-i="ms_save">Сохранить и проверить</button>
       <button id="msForget" data-i="ms_forget">Отключить</button>
@@ -299,7 +303,7 @@ const I18N = {
     no_free:'Нет неиспользованных этикеток', restore_q:n=>`Загрузить базу из файла (${n} кодов)? Текущие данные будут заменены.`, restored:'База загружена.',
     free_name:'свободные_коды', pcs:'шт', shown:n=>`Показано ${n}`, fab_text:'Добавить PDF', not_pdf:'это не PDF-файл',
     ms_h:'МойСклад: приёмка', ms_help:'Сканер может сам складывать принятые коды в приёмку «МойСклад». Адрес сервера и токен даёт Роман, они хранятся только на этом планшете.',
-    ms_url:'Адрес сервера', ms_token:'Токен сканера', ms_save:'Сохранить и проверить', ms_forget:'Отключить',
+    ms_url:'Адрес сервера', ms_token:'Токен сканера', dev_label:'Название планшета (видно на ноутбуке и в журнале)', dev_ph:'например: Ворота 1', ms_save:'Сохранить и проверить', ms_forget:'Отключить',
     ms_checking:'Проверяю связь…', ms_ok:w=>w?'Связь есть, запись в «МойСклад» включена.':'Связь есть, но запись в «МойСклад» пока выключена: сканы подождут, пока её включат.',
     ms_fail:e=>`Нет связи с сервером: ${e}`, ms_off:'Отключено: коды только вычёркиваются из PDF.', ms_bad_url:'Адрес должен начинаться с https://',
     sup_word:'Приёмка', sup_none:'Приёмка не выбрана — коды только вычёркиваются из PDF.', sup_pick:'Выбрать приёмку', sup_new:'Новая приёмка',
@@ -350,7 +354,7 @@ const I18N = {
     no_free:'没有未使用的标签', restore_q:n=>`从文件加载数据库（${n} 个编码）？当前数据将被替换。`, restored:'数据库已加载。',
     free_name:'未使用编码', pcs:'个', shown:n=>`显示 ${n} 条`, fab_text:'添加 PDF', not_pdf:'不是 PDF 文件',
     ms_h:'МойСклад：入库单', ms_help:'扫描器可以把已接受的编码自动加入 МойСклад 的入库单。服务器地址和令牌由 Роман 提供，只保存在这台平板上。',
-    ms_url:'服务器地址', ms_token:'扫描器令牌', ms_save:'保存并检查', ms_forget:'断开',
+    ms_url:'服务器地址', ms_token:'扫描器令牌', dev_label:'平板名称（笔记本和日志中可见）', dev_ph:'例如：1号门', ms_save:'保存并检查', ms_forget:'断开',
     ms_checking:'正在检查连接…', ms_ok:w=>w?'连接正常，已开启写入 МойСклад。':'连接正常，但写入 МойСклад 尚未开启：扫描会等待开启后再发送。',
     ms_fail:e=>`无法连接服务器：${e}`, ms_off:'已断开：编码只在 PDF 中划掉。', ms_bad_url:'地址必须以 https:// 开头',
     sup_word:'入库单', sup_none:'未选择入库单 — 编码只在 PDF 中划掉。', sup_pick:'选择入库单', sup_new:'新建入库单',
@@ -926,7 +930,12 @@ const devId=(()=>{ let id=LS.get('km_device'); if(!id){ id=newId().replace(/-/g,
 let devModel=(/Android[^;]*;\s*([^;)]+)/.exec(navigator.userAgent)||[])[1]||(/Windows/.test(navigator.userAgent)?'Windows':/Mac OS/.test(navigator.userAgent)?'Mac':'браузер');
 if(devModel==='K') devModel='Android';   // Chrome прячет модель в User-Agent — спросим отдельно
 try{ if(navigator.userAgentData&&navigator.userAgentData.getHighEntropyValues) navigator.userAgentData.getHighEntropyValues(['model']).then(v=>{ if(v&&v.model) devModel=v.model; }).catch(()=>{}); }catch(e){}
-const devName=()=>`${devModel} · ${devId.slice(0,4)}`;
+// Название планшета вводят на нём самом («Ворота 1»): по нему Артём на ноутбуке выбирает, куда отправить PDF
+const devLabel=()=>String(LS.get('km_name')||'').trim().slice(0,30);
+const devName=()=>devLabel()||`${devModel} · ${devId.slice(0,4)}`;
+function renderDevLabel(){ $('#devTitle').textContent=devLabel(); const i=$('#devLabel'); if(i&&document.activeElement!==i) i.value=devLabel(); }
+$('#devLabel').addEventListener('change',()=>{ const v=$('#devLabel').value.trim().slice(0,30), was=devLabel(); LS.set('km_name',v||null); renderDevLabel(); if(v!==was) kmLog('info','info',`Название планшета: ${v||'не задано'}${was?` (было: ${was})`:''}`); if(typeof inboxPull==='function') inboxPull(); });
+renderDevLabel();
 const logLoad=()=>{ try{ return JSON.parse(LS.get(LOGQ_KEY)||'[]')||[]; }catch(e){ return []; } };
 let logSeq=+(LS.get('km_logseq')||0)||0, logTimer=null, logSending=false;
 function kmLog(kind,level,text,raw){
@@ -984,7 +993,7 @@ function logMsBack(){ if(msWaitNote){ msWaitNote=''; kmLog('ms','info','Связ
 // (/api/receiving/transfer), а новая страница забирает их по одноразовому id. База на старом адресе остаётся как была.
 const NEW_HOME='https://201-24-62-64.sslip.io';
 const homeUrl=()=>(msCfg().url||NEW_HOME).replace(/\/+$/,'');
-const MOVE_LS=['km_supply','km_supply_groups','km_hist','km_lang','km_device','km_logseq','km_logq'];
+const MOVE_LS=['km_supply','km_supply_groups','km_hist','km_lang','km_device','km_name','km_logseq','km_logq'];
 const L2=(ru,zh)=>LANG==='zh'?zh:ru;
 async function dbExport(){ const files=(await allFiles()).map(f=>({...f,pdf:b64(f.pdf)})); return {v:1,files,codes:await allCodes()}; }
 async function dbImport(data){
