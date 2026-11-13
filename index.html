@@ -493,7 +493,60 @@ async function decodePage(page){
     ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
     // intent 'print': pdf.js не ждёт requestAnimationFrame, который в фоновой вкладке не вызывается, — разбор не замирает
     await page.render({canvasContext:ctx,viewport:vp,intent:'print'}).promise;
-    const t=decodeCanvas(); if(t) return t;
+    // reader без подсказок находит и линейный штрих-код (EAN под DataMatrix) — такой ответ не код маркировки
+    const t=decodeCanvas(); if(t&&parseKM(t)) return t;
+  }
+  return decodeImages(page);
+}
+// Этикетки «Рубчик» (13.11.2026): DataMatrix прямоугольный, прижат к краю страницы, рядом текст и EAN — по всей
+// странице детектор его не находит. Поэтому вырезаем каждую картинку страницы (из списка операций pdf.js) с белым
+// полем и читаем её отдельно, только как DataMatrix.
+const dmReader=new ZXing.DataMatrixReader();
+const pageCanvas=document.createElement('canvas'), pageCtx=pageCanvas.getContext('2d',{willReadFrequently:true});
+const mulM=(m,n)=>[m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5]];
+/** Где на странице нарисованы картинки: прямоугольники в координатах PDF. */
+async function imageBoxes(page){
+  const O=pdfjsLib.OPS, ops=await page.getOperatorList(), boxes=[], stack=[];
+  let m=[1,0,0,1,0,0];
+  for(let i=0;i<ops.fnArray.length;i++){
+    const fn=ops.fnArray[i], a=ops.argsArray[i];
+    if(fn===O.save) stack.push(m);
+    else if(fn===O.restore) m=stack.pop()||[1,0,0,1,0,0];
+    else if(fn===O.transform) m=mulM(m,a);
+    else if(fn===O.paintFormXObjectBegin){ stack.push(m); if(a&&a[0]) m=mulM(m,a[0]); }
+    else if(fn===O.paintFormXObjectEnd) m=stack.pop()||[1,0,0,1,0,0];
+    else if(fn===O.paintImageXObject||fn===O.paintInlineImageXObject||fn===O.paintImageMaskXObject){
+      const pts=[[0,0],[1,0],[0,1],[1,1]].map(([x,y])=>[m[0]*x+m[2]*y+m[4], m[1]*x+m[3]*y+m[5]]);
+      const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+      boxes.push([Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]);
+    }
+  }
+  return boxes.filter(b=>b[2]-b[0]>5&&b[3]-b[1]>5)
+    // похожие на квадрат — первыми: DataMatrix ближе к квадрату, чем линейный штрих-код
+    .sort((p,q)=>{ const r=b=>{ const k=(b[2]-b[0])/(b[3]-b[1]); return k>1?k:1/k; }; return r(p)-r(q); }).slice(0,6);
+}
+async function decodeImages(page){
+  let boxes; try{ boxes=await imageBoxes(page); }catch(e){ return null; }
+  if(!boxes.length) return null;
+  const vp=page.getViewport({scale:3});
+  pageCanvas.width=Math.floor(vp.width); pageCanvas.height=Math.floor(vp.height);
+  pageCtx.fillStyle='#fff'; pageCtx.fillRect(0,0,pageCanvas.width,pageCanvas.height);
+  await page.render({canvasContext:pageCtx,viewport:vp,intent:'print'}).promise;
+  for(const b of boxes){
+    const r=vp.convertToViewportRectangle(b);
+    const x=Math.max(0,Math.floor(Math.min(r[0],r[2]))), y=Math.max(0,Math.floor(Math.min(r[1],r[3])));
+    const w=Math.min(pageCanvas.width,Math.ceil(Math.max(r[0],r[2])))-x, h=Math.min(pageCanvas.height,Math.ceil(Math.max(r[1],r[3])))-y;
+    if(w<10||h<10) continue;
+    const pad=Math.round(Math.max(w,h)*0.15)+6;
+    canvas.width=w+2*pad; canvas.height=h+2*pad;
+    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(pageCanvas,x,y,w,h,pad,pad,w,h);
+    const img=ctx.getImageData(0,0,canvas.width,canvas.height), d=img.data, n=d.length/4, lum=new Uint8ClampedArray(n);
+    for(let k=0;k<n;k++) lum[k]=(d[k*4]*299+d[k*4+1]*587+d[k*4+2]*114)/1000;
+    try{
+      const t=dmReader.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(lum,canvas.width,canvas.height))),zxHints).getText();
+      if(t&&parseKM(t)) return t;
+    }catch(e){}
   }
   return null;
 }
@@ -509,6 +562,21 @@ async function pageMeta(page){
     const m=(L.slice(0,3).join(' ')).match(/Размер\s*(\S+)?/);
     if(m&&m[1]) size=m[1]; else if(L.length>1&&L[1].length<=4) size=L[1];
     product=product.replace(/\.?\s*Размер.*$/,'').trim();
+  }
+  // «Размер» не в первых строках (этикетки «Рубчик»: первой pdf.js отдаёт «Код ТН ВЭД») — название берём столбцом
+  // строк над строкой «Размер …», с тем же отступом слева
+  if(!/Размер\s*\S/.test(L.slice(0,3).join(' '))){
+    const items=tc.items.filter(it=>it.str&&it.str.trim()).map(it=>({s:it.str.trim(),x:it.transform[4],y:it.transform[5],h:Math.abs(it.transform[3])||8}));
+    const r=items.find(it=>/Размер\s*\S/.test(it.s));
+    if(r){
+      const col=items.filter(it=>Math.abs(it.x-r.x)<=3&&it.y>=r.y-1).sort((a,b)=>a.y-b.y);   // снизу вверх
+      const block=[]; let prev=null;
+      for(const it of col){ if(prev&&it.y-prev.y>prev.h*1.8) break; block.push(it); prev=it; }
+      const text=block.reverse().map(it=>it.s).join(' ');
+      const m=text.match(/Размер\s*(\S+)/);
+      product=text.replace(/\.?\s*Размер.*$/,'').trim();
+      size=m?m[1]:size;
+    }
   }
   return {product,size};
 }
