@@ -280,7 +280,7 @@ const I18N = {
     doc_label:'Отгрузка / документ (необязательно)', doc_ph:'например: WB Казань 10.09',
     scan_label:'Наведи сканер на код и нажми курок', scan_ph:'здесь появится код…',
     scan_hint:'Сканируй — курсор встанет в поле сам. Сканер сам нажмёт Enter.', tail_skip:'хвост кода — пропущен',
-    upload_h:'Загрузить PDF с этикетками', drop_text:'Нажми, чтобы выбрать PDF из «Загрузок» (можно несколько)',
+    upload_h:'Загрузить PDF с этикетками', drop_text:'Нажми, чтобы выбрать PDF из «Загрузок» (можно несколько). Пока идёт разбор, можно уходить на другие вкладки',
     files_h:'Файлы', th_file:'Файл', th_uploaded:'Загружен', th_free:'Свободно', th_product:'Товар', th_size:'Размер', th_serial:'Серийник', th_status:'Статус', th_when:'Когда / куда',
     export_all:'Скачать PDF со всеми свободными кодами', print_all:'Печать всех свободных',
     backup_h:'База данных', backup_help:'База хранится в этом браузере на этом планшете. Чтобы перенести на другое устройство или сделать копию — сохрани файл базы и загрузи его там.',
@@ -292,6 +292,7 @@ const I18N = {
     chars:'симв.', keys_l:'клавиши', layout_note:'раскладка RU → EN',
     used_at:'Использован', page:'стр.', got:'Получено',
     parsing:n=>`Разбираю ${n}…`, up_done:(n,p,a)=>`${n}: страниц ${p}, добавлено кодов ${a}.`, up_dup:l=>` Уже были в базе (пропущены): стр. ${l}.`, up_unread:l=>` Не удалось прочитать код: стр. ${l}.`, up_none:'Новых кодов нет — файл не сохранён.',
+    parse_resume:(n,p)=>`Продолжаю разбор ${n} со страницы ${p}…`, parsing_s:'разбор…',
     show:'показать', pdf_free:'PDF свободных', print:'печать', del:'удалить', nothing:'Пока ничего не загружено', none:'Ничего не найдено',
     of:'из', free_s:'свободен', used_s:'использован', mark:'отметить', unmark:'вернуть', manual:'вручную',
     confirm_del:n=>`Удалить файл «${n}» и все его коды из базы?`, confirm_wipe:'Удалить ВСЮ базу: все файлы и все коды? Это нельзя отменить.',
@@ -342,6 +343,7 @@ const I18N = {
     chars:'字符', keys_l:'按键', layout_note:'键盘布局 RU → EN',
     used_at:'已使用于', page:'第', got:'收到',
     parsing:n=>`正在解析 ${n}…`, up_done:(n,p,a)=>`${n}：共 ${p} 页，新增编码 ${a} 个。`, up_dup:l=>` 已存在（跳过）：第 ${l} 页。`, up_unread:l=>` 无法读取编码：第 ${l} 页。`, up_none:'没有新编码 — 文件未保存。',
+    parse_resume:(n,p)=>`继续解析 ${n}，从第 ${p} 页开始…`, parsing_s:'解析中…',
     show:'查看', pdf_free:'未使用 PDF', print:'打印', del:'删除', nothing:'尚未上传任何文件', none:'未找到',
     of:'/', free_s:'未使用', used_s:'已使用', mark:'标记', unmark:'恢复', manual:'手动',
     confirm_del:n=>`删除文件“${n}”及其全部编码？`, confirm_wipe:'删除整个数据库（所有文件和编码）？此操作无法撤销。',
@@ -390,17 +392,21 @@ function applyLang(){
 document.querySelectorAll('.lang button').forEach(b=>b.onclick=()=>{LANG=b.dataset.lang;try{localStorage.setItem('km_lang',LANG)}catch(e){};applyLang();});
 
 // ============================================================ база (IndexedDB)
-const DB_NAME='kmscan', DB_VER=1;
+const DB_NAME='kmscan', DB_VER=2;
 let db;
 function openDB(){
   return new Promise((res,rej)=>{
     const r=indexedDB.open(DB_NAME,DB_VER);
     r.onupgradeneeded=e=>{
       const d=e.target.result;
-      const f=d.createObjectStore('files',{keyPath:'id',autoIncrement:true});
-      const c=d.createObjectStore('codes',{keyPath:'id',autoIncrement:true});
-      c.createIndex('key',['gtin','serial'],{unique:true});
-      c.createIndex('file_id','file_id');
+      if(!d.objectStoreNames.contains('files')){
+        d.createObjectStore('files',{keyPath:'id',autoIncrement:true});
+        const c=d.createObjectStore('codes',{keyPath:'id',autoIncrement:true});
+        c.createIndex('key',['gtin','serial'],{unique:true});
+        c.createIndex('file_id','file_id');
+      }
+      // v2: докуда дошёл разбор PDF — отдельно от файла, чтобы не переписывать мегабайты PDF каждые 5 страниц
+      if(!d.objectStoreNames.contains('parse')) d.createObjectStore('parse',{keyPath:'file_id'});
     };
     r.onsuccess=e=>{db=e.target.result;res(db)};
     r.onerror=e=>rej(e.target.error);
@@ -481,7 +487,8 @@ async function decodePage(page){
     const vp=page.getViewport({scale});
     canvas.width=Math.floor(vp.width*frac); canvas.height=Math.floor(vp.height);
     ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
-    await page.render({canvasContext:ctx,viewport:vp}).promise;
+    // intent 'print': pdf.js не ждёт requestAnimationFrame, который в фоновой вкладке не вызывается, — разбор не замирает
+    await page.render({canvasContext:ctx,viewport:vp,intent:'print'}).promise;
     const t=decodeCanvas(); if(t) return t;
   }
   return null;
@@ -502,44 +509,117 @@ async function pageMeta(page){
   return {product,size};
 }
 
+// Уступить поток: сообщение MessageChannel в фоновой вкладке не притормаживается, как setTimeout.
+const yieldNow=()=>new Promise(r=>{ const ch=new MessageChannel(); ch.port1.onmessage=()=>r(); ch.port2.postMessage(0); });
+// Пока идёт разбор, экран не гаснет: погасший экран прячет вкладку, а Android может её выгрузить.
+let wakeLock=null, parseBusy=0;
+async function wakeOn(){ try{ if(parseBusy&&!wakeLock&&navigator.wakeLock&&document.visibilityState==='visible'){ wakeLock=await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release',()=>{ wakeLock=null; }); } }catch(e){} }
+function wakeOff(){ try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock=null; }
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') wakeOn(); });
+
+// Разбор — по одному файлу: ручная загрузка, PDF с ноутбука и продолжение после перезагрузки встают в очередь.
+let parseChain=Promise.resolve();
+const parseQueue=fn=>{ const p=parseChain.then(fn,fn); parseChain=p.catch(()=>{}); return p; };
+const isPdf=b=>b&&b.length>4&&b[0]===0x25&&b[1]===0x50&&b[2]===0x44&&b[3]===0x46;
+const PARSE_STEP=5;
+
 async function uploadFiles(list){
-  if(!list||!list.length) return; showView('files'); $('#fab').classList.add('busy');
-  const prog=document.getElementById('prog'), msg=document.getElementById('upmsg');
+  if(!list||!list.length) return; showView('files');
   for(const f of list){
-    msg.className='msg'; msg.textContent=T('parsing')(f.name); prog.hidden=false; prog.value=0;
-    const bytes=new Uint8Array(await f.arrayBuffer());
-    if(!(bytes[0]===0x25&&bytes[1]===0x50&&bytes[2]===0x44&&bytes[3]===0x46)){ msg.className='msg err'; msg.textContent=f.name+': '+T('not_pdf'); prog.hidden=true; continue; }
-    let doc; try{ doc=await pdfjsLib.getDocument({data:bytes.slice()}).promise; }catch(e){ msg.className='msg err'; msg.textContent=f.name+': '+e.message; continue; }
-    const found=[], unread=[];
-    for(let i=1;i<=doc.numPages;i++){
-      const page=await doc.getPage(i);
-      const raw=await decodePage(page); const p=raw?parseKM(raw):null;
-      if(!p){unread.push(i);} else { const meta=await pageMeta(page); found.push({page:i,...p,...meta}); }
-      prog.value=Math.round(i/doc.numPages*100);
-      if(i%5===0) await new Promise(r=>setTimeout(r,0));
-    }
-    // запись
-    const t=tx(['files','codes'],'readwrite'), fs=t.objectStore('files'), cs=t.objectStore('codes');
-    const fileId=await req(fs.add({name:f.name, pages:doc.numPages, uploaded_at:new Date().toISOString(), pdf:bytes}));
-    let added=0; const dup=[];
-    for(const c of found){
-      const ex=await req(cs.index('key').get([c.gtin,c.serial]));
-      if(ex){dup.push(c.page);continue;}
-      await req(cs.add({file_id:fileId,page:c.page,gtin:c.gtin,serial:c.serial,full_code:c.full,product:c.product,size:c.size,used_at:null,used_doc:null}));
-      added++;
-    }
-    if(added===0) fs.delete(fileId);
-    await txDone(t);
-    let m=added===0?`${f.name}: ${T('up_none')}`:T('up_done')(f.name,doc.numPages,added);
-    if(dup.length) m+=T('up_dup')(dup.join(', '));
-    if(unread.length) m+=T('up_unread')(unread.join(', '));
-    msg.className='msg'+((dup.length||unread.length)?' err':''); msg.textContent=m;
-    kmLog('info',unread.length?'warn':'info',`PDF ${f.name}: страниц ${doc.numPages}, новых кодов ${added}${dup.length?`, уже были: стр. ${dup.join(', ')}`:''}${unread.length?`, не прочитан код: стр. ${unread.join(', ')}`:''}`);
-    prog.hidden=true;
+    let bytes; try{ bytes=new Uint8Array(await f.arrayBuffer()); }catch(e){ const m=$('#upmsg'); m.className='msg err'; m.textContent=f.name+': '+e.message; continue; }
+    await addPdf(f.name,bytes);
   }
-  $('#fab').classList.remove('busy');
-  czPush();
+}
+/** PDF → сразу в базу (так он переживёт перезагрузку вкладки) → разбор в очереди. Возвращает итог разбора или null. */
+async function addPdf(name,bytes,extra){
+  if(!isPdf(bytes)){ const m=$('#upmsg'); m.className='msg err'; m.textContent=name+': '+T('not_pdf'); return null; }
+  const t=tx('files','readwrite');
+  const fileId=await req(t.objectStore('files').add({name, pages:null, uploaded_at:new Date().toISOString(), pdf:bytes, parsing:true, ...(extra||{})}));
+  await txDone(t);
   refreshAll();
+  return parseQueue(()=>parseStored(fileId));
+}
+/** Файлы, разбор которых оборвался (вкладку выгрузили, перезагрузили), — дочитать с той же страницы. */
+async function resumeParsing(){
+  for(const f of (await allFiles()).filter(x=>x.parsing).sort((a,b)=>a.id-b.id)) parseQueue(()=>parseStored(f.id));
+}
+/**
+ * Разбор сохранённого PDF. Коды пишутся в базу каждые PARSE_STEP страниц вместе с отметкой, докуда дошли (store parse),
+ * поэтому обрыв на любой странице теряет не больше нескольких страниц, а не весь файл.
+ */
+async function parseStored(fileId){
+  const f=await req(tx('files').objectStore('files').get(fileId));
+  if(!f||!f.parsing) return null;
+  const prog=$('#prog'), msg=$('#upmsg');
+  const pr=(await req(tx('parse').objectStore('parse').get(fileId)))||{file_id:fileId,parsed:0,added:0,dup:[],unread:[]};
+  parseBusy++; wakeOn(); $('#fab').classList.add('busy');
+  try{
+    msg.className='msg'; msg.textContent=pr.parsed?T('parse_resume')(f.name,pr.parsed+1):T('parsing')(f.name);
+    prog.hidden=false; prog.value=0;
+    let doc;
+    try{ doc=await pdfjsLib.getDocument({data:f.pdf.slice()}).promise; }
+    catch(e){
+      msg.className='msg err'; msg.textContent=f.name+': '+e.message;
+      await finishFile(fileId,pr,null);
+      kmLog('info','error',`PDF ${f.name}: не открылся — ${e.message}`);
+      return null;
+    }
+    const N=doc.numPages; let batch=[];
+    for(let i=pr.parsed+1;i<=N;i++){
+      const page=await doc.getPage(i);
+      let raw=null; try{ raw=await decodePage(page); }catch(e){}   // сбой отрисовки одной страницы — как нечитаемый код
+      const p=raw?parseKM(raw):null;
+      if(!p) batch.push({page:i,unread:true}); else batch.push({page:i,...p,...(await pageMeta(page))});
+      page.cleanup();
+      prog.value=Math.round(i/N*100);
+      if(i%PARSE_STEP===0||i===N){
+        if(!(await saveBatch(fileId,pr,batch,i))){ msg.className='msg'; msg.textContent=''; return null; }   // файл удалили во время разбора
+        batch=[];
+        await yieldNow();
+      }
+    }
+    pr.pages=N;
+    const kept=await finishFile(fileId,pr,N);
+    try{ doc.destroy(); }catch(e){}
+    let m=pr.added===0?`${f.name}: ${T('up_none')}`:T('up_done')(f.name,N,pr.added);
+    if(pr.dup.length) m+=T('up_dup')(pr.dup.join(', '));
+    if(pr.unread.length) m+=T('up_unread')(pr.unread.join(', '));
+    msg.className='msg'+((pr.dup.length||pr.unread.length)?' err':''); msg.textContent=m;
+    kmLog('info',pr.unread.length?'warn':'info',`PDF ${f.name}: страниц ${N}, новых кодов ${pr.added}${pr.dup.length?`, уже были: стр. ${pr.dup.join(', ')}`:''}${pr.unread.length?`, не прочитан код: стр. ${pr.unread.join(', ')}`:''}`);
+    return {fileId:kept?fileId:null, name:f.name, pages:N, added:pr.added, dup:pr.dup, unread:pr.unread, inbox_id:f.inbox_id||null};
+  }finally{
+    parseBusy--; if(!parseBusy){ wakeOff(); $('#fab').classList.remove('busy'); prog.hidden=true; }
+    czPush(); refreshAll();
+  }
+}
+/** Пачка страниц → коды в базу и отметка «дочитано до upto», одной транзакцией. false — файла уже нет. */
+async function saveBatch(fileId,pr,batch,upto){
+  const t=tx(['files','codes','parse'],'readwrite'), cs=t.objectStore('codes');
+  if(!(await req(t.objectStore('files').get(fileId)))){ t.objectStore('parse').delete(fileId); await txDone(t); return false; }
+  for(const c of batch){
+    if(c.unread){ if(!pr.unread.includes(c.page)) pr.unread.push(c.page); continue; }
+    const ex=await req(cs.index('key').get([c.gtin,c.serial]));
+    if(ex){ if(ex.file_id!==fileId&&!pr.dup.includes(c.page)) pr.dup.push(c.page); continue; }   // свой код — повтор после обрыва
+    await req(cs.add({file_id:fileId,page:c.page,gtin:c.gtin,serial:c.serial,full_code:c.full,product:c.product,size:c.size,used_at:null,used_doc:null}));
+    pr.added++;
+  }
+  pr.parsed=upto;
+  t.objectStore('parse').put(pr);
+  await txDone(t);
+  return true;
+}
+/** Разбор окончен: файл без новых кодов — удалить (как раньше), иначе снять отметку parsing. true — файл остался. */
+async function finishFile(fileId,pr,pages){
+  const t=tx(['files','codes','parse'],'readwrite'), fs=t.objectStore('files');
+  t.objectStore('parse').delete(fileId);
+  const cur=await req(fs.get(fileId)); let kept=false;
+  if(cur){
+    const own=await req(t.objectStore('codes').index('file_id').count(fileId));
+    if(own===0) fs.delete(fileId);
+    else { cur.parsing=false; if(pages) cur.pages=pages; fs.put(cur); kept=true; }
+  }
+  await txDone(t);
+  return kept;
 }
 
 // ============================================================ скан
@@ -718,7 +798,7 @@ function renderStats(codes){ const t=codes.length, f=codes.filter(c=>!c.used_at)
 function renderFiles(files,codes){
   files.sort((a,b)=>b.id-a.id);
   $('#files').innerHTML=files.map(f=>{ const cs=codes.filter(c=>c.file_id===f.id), fr=cs.filter(c=>!c.used_at).length;
-    return `<tr><td class="wrap">${esc(f.name)}</td><td>${fmt(f.uploaded_at)}</td><td>${fr} ${T('of')} ${cs.length}</td>
+    return `<tr><td class="wrap">${esc(f.name)}</td><td>${fmt(f.uploaded_at)}</td><td>${f.parsing?`<span class="pill ms-pending">${T('parsing_s')}</span> ${cs.length}`:`${fr} ${T('of')} ${cs.length}`}</td>
     <td class="row"><button class="small" onclick="filterFile(${f.id})">${T('show')}</button><button class="small" onclick="exportPDF(${f.id},false)">${T('pdf_free')}</button><button class="small" onclick="exportPDF(${f.id},true)">${T('print')}</button><button class="small" onclick="delFile(${f.id})">${T('del')}</button></td></tr>`; }).join('')
     || `<tr><td colspan="4" class="help">${T('nothing')}</td></tr>`;
 }
@@ -751,7 +831,7 @@ async function toggle(id){
   kmLog('info','info',`${r.used_at?'Отмечен вручную':'Вернули код'} · ${r.serial}`);
   s.put(r); await txDone(t); refreshAll(); }
 async function delFile(id){ const f=(await allFiles()).find(x=>x.id===id); if(!f||!confirm(T('confirm_del')(f.name))) return;
-  const t=tx(['files','codes'],'readwrite'); t.objectStore('files').delete(id);
+  const t=tx(['files','codes','parse'],'readwrite'); t.objectStore('files').delete(id); t.objectStore('parse').delete(id);
   const cs=t.objectStore('codes'); const keys=await req(cs.index('file_id').getAllKeys(id)); keys.forEach(k=>cs.delete(k)); await txDone(t); curFile=null; refreshAll(); }
 function filterFile(id){ curFile=(curFile===id?null:id); showView('codes'); refreshAll(); }
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');state=b.dataset.state;refreshAll();});
@@ -1288,6 +1368,7 @@ openDB().then(async()=>{
   if(msSetup==='ok'){ msLine('',esc(T('ms_checking'))); const r=await msStatus(); msLine(r.ok?'ok':'err',esc(r.ok?T('ms_ok')(r.data.writes):T('ms_fail')(r.error))); renderSupply(); }
   renderMoved(); movedNote();
   if(msMove&&msSetup==='ok') await moveIn(msMove);
+  resumeParsing();
   msPump(); logPump(); czPush().then(czPull);
 }).catch(e=>{ $('#stats').textContent='IndexedDB: '+e; kmLog('error','error','База планшета не открылась: '+e); });
 </script>
