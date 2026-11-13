@@ -609,7 +609,8 @@ async function saveBatch(fileId,pr,batch,upto){
   for(const c of batch){
     if(c.unread){ if(!pr.unread.includes(c.page)) pr.unread.push(c.page); continue; }
     const ex=await req(cs.index('key').get([c.gtin,c.serial]));
-    if(ex){ if(ex.file_id!==fileId&&!pr.dup.includes(c.page)) pr.dup.push(c.page); continue; }   // свой код — повтор после обрыва
+    // та же страница того же файла — повторный разбор (база перенесена посреди разбора); иначе — код уже был
+    if(ex){ if(!(ex.file_id===fileId&&ex.page===c.page)&&!pr.dup.includes(c.page)) pr.dup.push(c.page); continue; }
     await req(cs.add({file_id:fileId,page:c.page,gtin:c.gtin,serial:c.serial,full_code:c.full,product:c.product,size:c.size,used_at:null,used_doc:null}));
     pr.added++;
   }
