@@ -1378,13 +1378,17 @@ async function czPush(){
   if(czPushing||!msOn()) return;
   czPushing=true; clearTimeout(czPushTimer);
   try{
-    for(;;){
-      const rows=(await allCodes()).filter(c=>!c.cz_sent).slice(0,800);
-      if(!rows.length) break;
-      const r=await api('POST','cz/codes',{codes:rows.map(c=>({gtin:c.gtin,serial:c.serial}))});
+    // С каждым кодом — имя PDF, страница и товар: на «Проверке ЧЗ» видно, из какого файла код не в обороте
+    // (просьба Василия, 14.11.2026). Коды, отправленные раньше без файла, досылаются один раз (cz_meta).
+    const names=new Map((await allFiles()).map(f=>[f.id,f.name]));
+    const todo=(await allCodes()).filter(c=>!c.cz_sent||!c.cz_meta);
+    for(let i=0;i<todo.length;i+=400){
+      const rows=todo.slice(i,i+400);
+      const r=await api('POST','cz/codes',{codes:rows.map(c=>({gtin:c.gtin,serial:c.serial,
+        file:names.get(c.file_id)||undefined,page:c.page||undefined,product:c.product||undefined,size:c.size||undefined}))});
       if(!r.ok){ czPushTimer=setTimeout(czPush,30000); break; }
       const t=tx('codes','readwrite'), st=t.objectStore('codes');
-      for(const c of rows){ const x=await req(st.get(c.id)); if(x){ x.cz_sent=1; st.put(x); } }
+      for(const c of rows){ const x=await req(st.get(c.id)); if(x){ x.cz_sent=1; x.cz_meta=1; st.put(x); } }
       await txDone(t);
     }
   }finally{ czPushing=false; }
